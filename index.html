@@ -47,7 +47,24 @@
       nav {
         background-color: #0f172a !important;
         border-top-color: #1e293b !important;
-      }
+      }/* Ocultar badge, drawer y herramientas de Netlify */
+#netlify-drawer,
+[data-netlify-drawer],
+[id^="netlify-"],
+iframe[title*="Netlify"],
+iframe[src*="netlify"],
+.netlify-badge {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  opacity: 0 !important;
+}
+
+/* Margen de seguridad para la barra inferior en teléfonos */
+nav {
+  padding-bottom: max(10px, env(safe-area-inset-bottom)) !important;
+  z-index: 9999 !important;
+}
     </style>
     <script src="https://cdn.jsdelivr.net/npm/@unocss/runtime"></script>
   </head>
