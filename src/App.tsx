@@ -6,6 +6,7 @@ import {
   onSnapshot,
   doc,
   runTransaction,
+  deleteDoc,
   serverTimestamp,
   query,
   orderBy,
@@ -116,7 +117,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [isFirebaseConnected, setIsFirebaseConnected] = useState(false);
 
-  const [products, setProducts] = useState(INITIAL_DEMO_PRODUCTS);
+  const [products, setProducts] = useState([])
   const [sales, setSales] = useState([]);
 
   // Estado POS
@@ -166,20 +167,11 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
 
-    const unsubProducts = onSnapshot(
-      collection(db, 'products'),
-      (snapshot) => {
-        if (!snapshot.empty) {
-          const prodList = snapshot.docs.map((doc) => ({
-            id: doc.id,
-            ...doc.data(),
-          }));
-          setProducts(prodList);
-          setIsFirebaseConnected(true);
-        }
-      },
-      (error) => console.warn('Firestore products:', error.message)
-    );
+    const unsubProducts = onSnapshot(collection(db, "products"), (snapshot) => {
+      const prodList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setProducts(prodList);
+      setIsFirebaseConnected(true);
+    }, (error) => console.warn("Firestore products:", error.message));
 
     const qSales = query(
       collection(db, 'sales'),
