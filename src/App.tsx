@@ -7,6 +7,7 @@ import {
   doc,
   runTransaction,
   deleteDoc,
+  updateDoc,
   serverTimestamp,
   query,
   orderBy,
@@ -493,7 +494,42 @@ export default function App() {
     setNewProdName('');
     setShowAddProductModal(false);
   };
+// Eliminar una prenda completa
+const handleDeleteProduct = async (product) => {
+  const seguro = window.confirm(`¿Seguro que deseas eliminar "${product.nombre}" de tu catálogo?`);
+  if (!seguro) return;
 
+  try {
+    if (user && isFirebaseConnected && !product.id.startsWith('local-')) {
+      await deleteDoc(doc(db, "products", product.id));
+    }
+    setProducts(prev => prev.filter(p => p.id !== product.id));
+  } catch (err) {
+    alert("Error al eliminar: " + err.message);
+  }
+};
+
+// Sumar o restar stock rápido (+ / -)
+const handleQuickStock = async (product, variantId, delta) => {
+  const updatedVariantes = product.variantes.map(v => {
+    if (v.id === variantId) {
+      const nuevoStock = Math.max(0, Number(v.stock || 0) + delta);
+      return { ...v, stock: nuevoStock };
+    }
+    return v;
+  });
+
+  try {
+    if (user && isFirebaseConnected && !product.id.startsWith('local-')) {
+      await updateDoc(doc(db, "products", product.id), {
+        variantes: updatedVariantes
+      });
+    }
+    setProducts(prev => prev.map(p => p.id === product.id ? { ...p, variantes: updatedVariantes } : p));
+  } catch (err) {
+    alert("Error al actualizar stock: " + err.message);
+  }
+};
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans select-none pb-20">
       {/* Barra Superior */}
@@ -744,62 +780,80 @@ export default function App() {
             <h2 className="text-lg font-bold text-white">Stock Total</h2>
             <button
               onClick={() => setShowAddProductModal(true)}
-              className="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded-xl font-semibold text-xs text-white flex items-center gap-1.5 shadow-md shadow-indigo-600/20"
+              className="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded-xl font-semibold text-xs flex items-center gap-1 text-white shadow-lg shadow-indigo-600/30 transition-all"
             >
               <Plus className="w-4 h-4" /> Nueva Prenda
             </button>
           </div>
 
           <div className="flex flex-col gap-3">
-            {products.map((p) => (
-              <div
-                key={p.id}
-                className="bg-slate-900 border border-slate-800 rounded-2xl p-4"
-              >
-                <div className="flex justify-between items-start mb-3">
-                  <div>
-                    <h3 className="font-bold text-sm text-white">{p.nombre}</h3>
-                    <span className="text-xs text-slate-400">
-                      {p.categoria} • {p.subcategoria}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="divide-y divide-slate-800/80">
-                  {p.variantes.map((v) => (
-                    <div
-                      key={v.id}
-                      className="py-2.5 flex items-center justify-between text-xs"
+            {products.length === 0 ? (
+              <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 text-center text-slate-400 text-xs">
+                No hay prendas registradas aún. Toca arriba en <strong className="text-white">+ Nueva Prenda</strong> para cargar tu catálogo.
+              </div>
+            ) : (
+              products.map(p => (
+                <div key={p.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+                  {/* Encabezado: Nombre y botón borrar */}
+                  <div className="flex justify-between items-start mb-3">
+                    <div>
+                      <h3 className="font-bold text-sm text-white">{p.nombre}</h3>
+                      <span className="text-xs text-slate-400">{p.categoria} • {p.subcategoria}</span>
+                    </div>
+                    <button
+                      onClick={() => handleDeleteProduct(p)}
+                      className="p-1.5 text-rose-400 hover:bg-rose-500/20 active:scale-95 rounded-lg transition-all"
+                      title="Eliminar prenda"
                     >
-                      <div>
-                        <span className="font-bold text-white">{v.talla}</span>
-                        <span className="text-slate-400 ml-2 font-medium">
-                          {v.color}
-                        </span>
-                        <div className="text-[10px] text-slate-500 mt-0.5">
-                          Costo: ${v.costo.toFixed(2)} \vert{} Venta:$
-                          {v.precio.toFixed(2)}
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {/* Variantes y botones de ajuste (+ / -) */}
+                  <div className="divide-y divide-slate-800/80">
+                    {p.variantes.map(v => (
+                      <div key={v.id} className="py-2.5 flex items-center justify-between text-xs">
+                        <div>
+                          <span className="font-bold text-white text-sm">{v.talla}</span>
+                          <span className="text-slate-400 ml-2 font-medium">{v.color}</span>
+                          <div className="text-[10px] text-slate-500 mt-0.5">
+                          Costo: ${Number(v.costo ?? 0).toFixed(2)} - Venta: ${Number(v.precio ?? 0).toFixed(2)}
+                          </div>
+                        </div>
+
+                        {/* Botones - y + */}
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => handleQuickStock(p, v.id, -1)}
+                            className="w-8 h-8 flex items-center justify-center bg-slate-800 active:bg-slate-700 text-white rounded-lg font-bold border border-slate-700 text-sm"
+                          >
+                            -
+                          </button>
+
+                          <div className="text-center min-w-[48px]">
+                            <span className={`px-2 py-0.5 rounded-full font-bold text-[12px] block ${
+                              v.stock <= v.stockMinimo 
+                                ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30' 
+                                : 'bg-slate-800 text-slate-200'
+                            }`}>
+                              {v.stock} un.
+                            </span>
+                            <span className="text-[9px] text-slate-500">Mín: {v.stockMinimo}</span>
+                          </div>
+
+                          <button
+                            onClick={() => handleQuickStock(p, v.id, 1)}
+                            className="w-8 h-8 flex items-center justify-center bg-indigo-600 active:bg-indigo-500 text-white rounded-lg font-bold text-sm"
+                          >
+                            +
+                          </button>
                         </div>
                       </div>
-                      <div className="text-right">
-                        <span
-                          className={`px-2 py-0.5 rounded-full font-bold text-[11px] ${
-                            v.stock <= v.stockMinimo
-                              ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
-                              : 'bg-slate-800 text-slate-200'
-                          }`}
-                        >
-                          {v.stock} un.
-                        </span>
-                        <span className="text-[10px] text-slate-500 block mt-0.5">
-                          Mín: {v.stockMinimo}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))
+            )}
           </div>
         </main>
       )}
