@@ -975,68 +975,184 @@ const handleQuickStock = async (product, variantId, delta) => {
         </main>
       )}
 
-      {/* Modal Nueva Prenda */}
-      {showAddProductModal && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 max-w-sm w-full">
-            <h3 className="font-bold text-base text-white mb-3">
-              Agregar Prenda
-            </h3>
-            <form
-              onSubmit={handleSaveProduct}
-              className="flex flex-col gap-3 text-xs"
-            >
+{showAddProductModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-5 shadow-2xl my-auto max-h-[90vh] overflow-y-auto">
+            <h3 className="text-base font-bold text-white mb-4">Agregar Prenda</h3>
+
+            <div className="flex flex-col gap-3">
               <div>
-                <label className="text-slate-400 block mb-1">Nombre</label>
+                <label className="text-xs text-slate-400 block mb-1">Nombre</label>
                 <input
                   type="text"
-                  required
+                  placeholder="Ej: Falda Plisada"
                   value={newProdName}
                   onChange={(e) => setNewProdName(e.target.value)}
-                  placeholder="Ej: Falda Plisada"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-white"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="text-slate-400 block mb-1">Categoría</label>
+                  <label className="text-xs text-slate-400 block mb-1">Categoría</label>
                   <input
                     type="text"
+                    placeholder="Ej: Ropa"
                     value={newProdCat}
                     onChange={(e) => setNewProdCat(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-white"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
                   />
                 </div>
                 <div>
-                  <label className="text-slate-400 block mb-1">
-                    Subcategoría
-                  </label>
+                  <label className="text-xs text-slate-400 block mb-1">Subcategoría</label>
                   <input
                     type="text"
+                    placeholder="Ej: Medias"
                     value={newProdSubCat}
                     onChange={(e) => setNewProdSubCat(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-white"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
                   />
                 </div>
               </div>
 
-              <div className="flex gap-2 justify-end mt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowAddProductModal(false)}
-                  className="px-3 py-1.5 rounded-lg text-slate-400 hover:text-white"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className="bg-indigo-600 hover:bg-indigo-500 px-4 py-1.5 rounded-lg font-bold text-white"
-                >
-                  Guardar
-                </button>
+              {/* SECCIÓN DE TALLAS, COLORES, PRECIOS Y STOCK */}
+              <div className="mt-2 border-t border-slate-800 pt-3">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-xs font-bold text-slate-300">Tallas, Colores y Precios</span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setNewVariants([
+                        ...newVariants,
+                        {
+                          id: 'v-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+                          talla: '',
+                          color: '',
+                          costo: 0,
+                          precio: 0,
+                          stock: 1,
+                          stockMinimo: 2,
+                        },
+                      ])
+                    }
+                    className="text-[11px] bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 px-2.5 py-1 rounded-lg font-semibold"
+                  >
+                    + Otra Talla/Color
+                  </button>
+                </div>
+
+                <div className="flex flex-col gap-3 max-h-60 overflow-y-auto pr-1">
+                  {newVariants.map((v, idx) => (
+                    <div key={v.id} className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex flex-col gap-2">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[11px] font-bold text-indigo-400">Variante #{idx + 1}</span>
+                        {newVariants.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => setNewVariants(newVariants.filter((_, i) => i !== idx))}
+                            className="text-[11px] text-rose-400 hover:underline"
+                          >
+                            Quitar
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[10px] text-slate-400 block mb-0.5">Talla</label>
+                          <input
+                            type="text"
+                            placeholder="Ej: S, M, Única"
+                            value={v.talla}
+                            onChange={(e) => {
+                              const copia = [...newVariants];
+                              copia[idx] = { ...copia[idx], talla: e.target.value };
+                              setNewVariants(copia);
+                            }}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] text-slate-400 block mb-0.5">Color</label>
+                          <input
+                            type="text"
+                            placeholder="Ej: Negro, Rojo"
+                            value={v.color}
+                            onChange={(e) => {
+                              const copia = [...newVariants];
+                              copia[idx] = { ...copia[idx], color: e.target.value };
+                              setNewVariants(copia);
+                            }}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <label className="text-[10px] text-slate-400 block mb-0.5">Costo Compra</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={v.costo}
+                            onChange={(e) => {
+                              const copia = [...newVariants];
+                              copia[idx] = { ...copia[idx], costo: parseFloat(e.target.value) };
+                              setNewVariants(copia);
+                            }}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] text-slate-400 block mb-0.5">Precio Venta</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={v.precio}
+                            onChange={(e) => {
+                              const copia = [...newVariants];
+                              copia[idx] = { ...copia[idx], precio: parseFloat(e.target.value) };
+                              setNewVariants(copia);
+                            }}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] text-slate-400 block mb-0.5">Stock Inicial</label>
+                          <input
+                            type="number"
+                            value={v.stock}
+                            onChange={(e) => {
+                              const copia = [...newVariants];
+                              copia[idx] = { ...copia[idx], stock: parseInt(e.target.value, 10) };
+                              setNewVariants(copia);
+                            }}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-white"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
-            </form>
+            </div>
+
+            <div className="flex justify-end gap-2 mt-5">
+              <button
+                type="button"
+                onClick={() => setShowAddProductModal(false)}
+                className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl text-xs font-semibold"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveProduct}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold"
+              >
+                Guardar
+              </button>
+            </div>
           </div>
         </div>
       )}
