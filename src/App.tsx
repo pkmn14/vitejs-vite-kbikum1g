@@ -494,40 +494,108 @@ export default function App() {
     setNewProdName('');
     setShowAddProductModal(false);
   };
-// Eliminar una prenda completa
+// Estado para el Modal de Edición de Prenda
+const [editingProduct, setEditingProduct] = useState(null);
+const [isSavingEdit, setIsSavingEdit] = useState(false);
+
+// 1. CÁLCULO EN TIEMPO REAL: TOTAL INVERTIDO (Capital en Inventario)
+const totalInvertido = products.reduce((totalAcumulado, prod) => {
+  const listaVariantes = Array.isArray(prod.variantes) ? prod.variantes : [];
+  const inversionPrenda = listaVariantes.reduce((subTotal, v) => {
+    const stockActual = Math.max(0, Number(v.stock ?? 0));
+    const precioCosto = Math.max(0, Number(v.costo ?? 0));
+    return subTotal + (stockActual * precioCosto);
+  }, 0);
+  return totalAcumulado + inversionPrenda;
+}, 0);
+
+const totalUnidadesFisicas = products.reduce((totalUnidades, prod) => {
+  const listaVariantes = Array.isArray(prod.variantes) ? prod.variantes : [];
+  return totalUnidades + listaVariantes.reduce((acc, v) => acc + Math.max(0, Number(v.stock ?? 0)), 0);
+}, 0);
+
+// 2. Abrir Modal de Edición al tocar una prenda
+const openEditModal = (product) => {
+  const variantesCopia = (Array.isArray(product.variantes) ? product.variantes : []).map((v) => ({
+    id: v.id ? v.id : 'v-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+    talla: v.talla ?? '',
+    color: v.color ?? '',
+    costo: Number(v.costo ?? 0),
+    precio: Number(v.precio ?? 0),
+    stock: Number(v.stock ?? 0),
+    stockMinimo: Number(v.stockMinimo ?? 2),
+  }));
+
+  setEditingProduct({
+    ...product,
+    nombre: product.nombre ?? '',
+    categoria: product.categoria ?? 'Ropa',
+    subcategoria: product.subcategoria ?? 'General',
+    variantes: variantesCopia,
+  });
+};
+
+// 3. Guardar cambios del Modal de Edición en Firestore
+const handleSaveEditedProduct = async () => {
+  if (!editingProduct) return;
+  if (!editingProduct.nombre.trim()) {
+    alert('Por favor ingresa el nombre de la prenda.');
+    return;
+  }
+
+  setIsSavingEdit(true);
+  try {
+    const variantesLimpias = editingProduct.variantes.map((v) => ({
+      id: v.id ? v.id : 'v-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+      talla: String(v.talla ?? 'Única').trim(),
+      color: String(v.color ?? 'General').trim(),
+      costo: Number.isNaN(Number(v.costo)) ? 0 : Math.max(0, Number(v.costo)),
+      precio: Number.isNaN(Number(v.precio)) ? 0 : Math.max(0, Number(v.precio)),
+      stock: Number.isNaN(parseInt(v.stock, 10)) ? 0 : Math.max(0, parseInt(v.stock, 10)),
+      stockMinimo: Number.isNaN(parseInt(v.stockMinimo, 10)) ? 2 : Math.max(0, parseInt(v.stockMinimo, 10)),
+    }));
+
+    const prendaActualizada = {
+      ...editingProduct,
+      nombre: editingProduct.nombre.trim(),
+      categoria: editingProduct.categoria.trim(),
+      subcategoria: editingProduct.subcategoria.trim(),
+      variantes: variantesLimpias,
+    };
+
+    if (user && isFirebaseConnected && !String(editingProduct.id).startsWith('local-')) {
+      await updateDoc(doc(db, 'products', editingProduct.id), {
+        nombre: prendaActualizada.nombre,
+        categoria: prendaActualizada.categoria,
+        subcategoria: prendaActualizada.subcategoria,
+        variantes: prendaActualizada.variantes,
+      });
+    }
+
+    setProducts((prev) =>
+      prev.map((p) => (p.id === prendaActualizada.id ? prendaActualizada : p))
+    );
+    setEditingProduct(null);
+  } catch (err) {
+    alert('Error al guardar cambios: ' + err.message);
+  } finally {
+    setIsSavingEdit(false);
+  }
+};
+
+// 4. Eliminar una prenda completa
 const handleDeleteProduct = async (product) => {
   const seguro = window.confirm(`¿Seguro que deseas eliminar "${product.nombre}" de tu catálogo?`);
   if (!seguro) return;
 
   try {
-    if (user && isFirebaseConnected && !product.id.startsWith('local-')) {
-      await deleteDoc(doc(db, "products", product.id));
+    if (user && isFirebaseConnected && !String(product.id).startsWith('local-')) {
+      await deleteDoc(doc(db, 'products', product.id));
     }
-    setProducts(prev => prev.filter(p => p.id !== product.id));
+    setProducts((prev) => prev.filter((p) => p.id !== product.id));
+    setEditingProduct(null);
   } catch (err) {
-    alert("Error al eliminar: " + err.message);
-  }
-};
-
-// Sumar o restar stock rápido (+ / -)
-const handleQuickStock = async (product, variantId, delta) => {
-  const updatedVariantes = product.variantes.map(v => {
-    if (v.id === variantId) {
-      const nuevoStock = Math.max(0, Number(v.stock || 0) + delta);
-      return { ...v, stock: nuevoStock };
-    }
-    return v;
-  });
-
-  try {
-    if (user && isFirebaseConnected && !product.id.startsWith('local-')) {
-      await updateDoc(doc(db, "products", product.id), {
-        variantes: updatedVariantes
-      });
-    }
-    setProducts(prev => prev.map(p => p.id === product.id ? { ...p, variantes: updatedVariantes } : p));
-  } catch (err) {
-    alert("Error al actualizar stock: " + err.message);
+    alert('Error al eliminar: ' + err.message);
   }
 };
   return (
@@ -775,78 +843,95 @@ const handleQuickStock = async (product, variantId, delta) => {
 
       {/* VISTA 2: INVENTARIO */}
       {activeTab === 'inventario' && (
-        <main className="p-4 flex-1 flex flex-col gap-4 max-w-md mx-auto w-full">
-          <div className="flex justify-between items-center">
-            <h2 className="text-lg font-bold text-white">Stock Total</h2>
+        <main className="p-4 flex-1 flex flex-col gap-5 max-w-md mx-auto w-full pb-28">
+          {/* TARJETA KPI: TOTAL INVERTIDO */}
+          <div className="bg-gradient-to-br from-indigo-950 via-slate-900 to-slate-900 border border-indigo-500/40 rounded-2xl p-5 shadow-xl">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-sm font-bold uppercase tracking-wider text-indigo-300">
+                Total Invertido (Capital)
+              </span>
+              <DollarSign className="w-5 h-5 text-indigo-400" />
+            </div>
+            <div className="text-3xl font-extrabold text-white tracking-tight my-1">
+              ${totalInvertido.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+            <div className="flex items-center justify-between text-sm text-slate-300 mt-2 pt-2 border-t border-slate-800/80">
+              <span>Unidades disponibles:</span>
+              <span className="font-bold text-base text-emerald-400">{totalUnidadesFisicas} un.</span>
+            </div>
+          </div>
+
+          {/* CABECERA Y BOTÓN NUEVA PRENDA */}
+          <div className="flex justify-between items-center gap-3">
+            <h2 className="text-xl font-bold text-white">Catálogo</h2>
             <button
+              type="button"
               onClick={() => setShowAddProductModal(true)}
-              className="bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded-xl font-semibold text-xs flex items-center gap-1 text-white shadow-lg shadow-indigo-600/30 transition-all"
+              className="h-12 px-5 bg-indigo-600 hover:bg-indigo-500 active:scale-95 rounded-xl font-bold text-base flex items-center gap-2 text-white shadow-lg shadow-indigo-600/30 transition-all"
             >
-              <Plus className="w-4 h-4" /> Nueva Prenda
+              <Plus className="w-5 h-5" /> Nueva Prenda
             </button>
           </div>
 
-          <div className="flex flex-col gap-3">
+          <p className="text-sm text-slate-400 -mt-2">
+            Toca cualquier prenda para editar su stock, agregar tallas/colores o cambiar precios.
+          </p>
+
+          {/* LISTA DE PRENDAS (SOLO LECTURA PARA EVITAR TOQUES ACCIDENTALES) */}
+          <div className="flex flex-col gap-4">
             {products.length === 0 ? (
-              <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 text-center text-slate-400 text-xs">
+              <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-8 text-center text-slate-300 text-base">
                 No hay prendas registradas aún. Toca arriba en <strong className="text-white">+ Nueva Prenda</strong> para cargar tu catálogo.
               </div>
             ) : (
-              products.map(p => (
-                <div key={p.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                  {/* Encabezado: Nombre y botón borrar */}
+              products.map((p) => (
+                <div
+                  key={p.id}
+                  onClick={() => openEditModal(p)}
+                  className="bg-slate-900 hover:bg-slate-800/80 active:scale-[0.99] border border-slate-800 rounded-2xl p-5 cursor-pointer transition-all shadow-md"
+                >
+                  {/* Encabezado de la prenda */}
                   <div className="flex justify-between items-start mb-3">
                     <div>
-                      <h3 className="font-bold text-sm text-white">{p.nombre}</h3>
-                      <span className="text-xs text-slate-400">{p.categoria} • {p.subcategoria}</span>
+                      <h3 className="font-bold text-lg text-white leading-snug">{p.nombre}</h3>
+                      <span className="text-sm text-slate-400 font-medium">
+                        {p.categoria} • {p.subcategoria}
+                      </span>
                     </div>
-                    <button
-                      onClick={() => handleDeleteProduct(p)}
-                      className="p-1.5 text-rose-400 hover:bg-rose-500/20 active:scale-95 rounded-lg transition-all"
-                      title="Eliminar prenda"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    <span className="px-3 py-1 bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 rounded-lg text-sm font-semibold">
+                      Editar
+                    </span>
                   </div>
 
-                  {/* Variantes y botones de ajuste (+ / -) */}
+                  {/* Lista informativa de variantes */}
                   <div className="divide-y divide-slate-800/80">
-                    {p.variantes.map(v => (
-                      <div key={v.id} className="py-2.5 flex items-center justify-between text-xs">
+                    {p.variantes.map((v) => (
+                      <div key={v.id} className="py-3 flex items-center justify-between">
                         <div>
-                          <span className="font-bold text-white text-sm">{v.talla}</span>
-                          <span className="text-slate-400 ml-2 font-medium">{v.color}</span>
-                          <div className="text-[10px] text-slate-500 mt-0.5">
-                          Costo: ${Number(v.costo ?? 0).toFixed(2)} - Venta: ${Number(v.precio ?? 0).toFixed(2)}
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-white text-base bg-slate-800 px-2.5 py-0.5 rounded-md">
+                              {v.talla}
+                            </span>
+                            <span className="text-slate-200 text-base font-medium">{v.color}</span>
+                          </div>
+                          <div className="text-sm text-slate-400 mt-1">
+                            Costo: ${Number(v.costo ?? 0).toFixed(2)} • Venta: <strong className="text-slate-200">${Number(v.precio ?? 0).toFixed(2)}</strong>
                           </div>
                         </div>
 
-                        {/* Botones - y + */}
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => handleQuickStock(p, v.id, -1)}
-                            className="w-8 h-8 flex items-center justify-center bg-slate-800 active:bg-slate-700 text-white rounded-lg font-bold border border-slate-700 text-sm"
+                        <div className="text-right">
+                          <span
+                            className={`px-3 py-1 rounded-xl font-bold text-base inline-block ${
+                              v.stock <= v.stockMinimo
+                                ? 'bg-amber-500/15 text-amber-300 border border-amber-500/40'
+                                : 'bg-slate-800 text-white'
+                            }`}
                           >
-                            -
-                          </button>
-
-                          <div className="text-center min-w-[48px]">
-                            <span className={`px-2 py-0.5 rounded-full font-bold text-[12px] block ${
-                              v.stock <= v.stockMinimo 
-                                ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30' 
-                                : 'bg-slate-800 text-slate-200'
-                            }`}>
-                              {v.stock} un.
-                            </span>
-                            <span className="text-[9px] text-slate-500">Mín: {v.stockMinimo}</span>
-                          </div>
-
-                          <button
-                            onClick={() => handleQuickStock(p, v.id, 1)}
-                            className="w-8 h-8 flex items-center justify-center bg-indigo-600 active:bg-indigo-500 text-white rounded-lg font-bold text-sm"
-                          >
-                            +
-                          </button>
+                            {v.stock} un.
+                          </span>
+                          <span className="text-xs text-slate-400 block mt-1">
+                            Mín: {v.stockMinimo}
+                          </span>
                         </div>
                       </div>
                     ))}
@@ -975,91 +1060,305 @@ const handleQuickStock = async (product, variantId, delta) => {
         </main>
       )}
 
-{showAddProductModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-5 shadow-2xl my-auto max-h-[90vh] overflow-y-auto">
-            <h3 className="text-base font-bold text-white mb-4">Agregar Prenda</h3>
+{/* MODAL 1: EDITAR PRENDA EXISTENTE (STOCK, PRECIOS Y NUEVAS VARIANTES) */}
+{editingProduct && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-5 shadow-2xl my-auto max-h-[92vh] overflow-y-auto flex flex-col gap-4">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h3 className="text-xl font-bold text-white">Editar Prenda</h3>
+              <button
+                type="button"
+                onClick={() => handleDeleteProduct(editingProduct)}
+                className="h-10 px-3 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 rounded-xl text-sm font-bold flex items-center gap-1.5"
+              >
+                <Trash2 className="w-4 h-4" /> Eliminar
+              </button>
+            </div>
 
             <div className="flex flex-col gap-3">
               <div>
-                <label className="text-xs text-slate-400 block mb-1">Nombre</label>
+                <label className="text-sm font-semibold text-slate-300 block mb-1">Nombre de la prenda</label>
+                <input
+                  type="text"
+                  value={editingProduct.nombre}
+                  onChange={(e) => setEditingProduct({ ...editingProduct, nombre: e.target.value })}
+                  className="w-full h-12 bg-slate-950 border border-slate-700 rounded-xl px-3.5 text-base text-white font-medium"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-sm font-semibold text-slate-300 block mb-1">Categoría</label>
+                  <input
+                    type="text"
+                    value={editingProduct.categoria}
+                    onChange={(e) => setEditingProduct({ ...editingProduct, categoria: e.target.value })}
+                    className="w-full h-12 bg-slate-950 border border-slate-700 rounded-xl px-3.5 text-base text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-semibold text-slate-300 block mb-1">Subcategoría</label>
+                  <input
+                    type="text"
+                    value={editingProduct.subcategoria}
+                    onChange={(e) => setEditingProduct({ ...editingProduct, subcategoria: e.target.value })}
+                    className="w-full h-12 bg-slate-950 border border-slate-700 rounded-xl px-3.5 text-base text-white"
+                  />
+                </div>
+              </div>
+
+              {/* VARIANTES DE LA PRENDA */}
+              <div className="mt-2 border-t border-slate-800 pt-4 flex flex-col gap-3">
+                <div className="flex justify-between items-center">
+                  <span className="text-base font-bold text-white">Variantes y Stock</span>
+                </div>
+
+                <div className="flex flex-col gap-4 max-h-80 overflow-y-auto pr-1">
+                  {editingProduct.variantes.map((v, idx) => (
+                    <div key={v.id} className="bg-slate-950 border border-slate-800 rounded-2xl p-4 flex flex-col gap-3">
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm font-bold text-indigo-400">
+                          Variante #{idx + 1}
+                        </span>
+                        {editingProduct.variantes.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const filtradas = editingProduct.variantes.filter((_, i) => i !== idx);
+                              setEditingProduct({ ...editingProduct, variantes: filtradas });
+                            }}
+                            className="text-sm font-semibold text-rose-400 px-2 py-1"
+                          >
+                            Quitar variante
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-xs font-semibold text-slate-400 block mb-1">Talla</label>
+                          <input
+                            type="text"
+                            placeholder="Ej: S, M, L"
+                            value={v.talla}
+                            onChange={(e) => {
+                              const copia = [...editingProduct.variantes];
+                              copia[idx] = { ...copia[idx], talla: e.target.value };
+                              setEditingProduct({ ...editingProduct, variantes: copia });
+                            }}
+                            className="w-full h-12 bg-slate-900 border border-slate-700 rounded-xl px-3 text-base text-white font-bold"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs font-semibold text-slate-400 block mb-1">Color</label>
+                          <input
+                            type="text"
+                            placeholder="Ej: Negro, Blanco"
+                            value={v.color}
+                            onChange={(e) => {
+                              const copia = [...editingProduct.variantes];
+                              copia[idx] = { ...copia[idx], color: e.target.value };
+                              setEditingProduct({ ...editingProduct, variantes: copia });
+                            }}
+                            className="w-full h-12 bg-slate-900 border border-slate-700 rounded-xl px-3 text-base text-white"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-xs font-semibold text-slate-400 block mb-1">Costo Compra ($)</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={v.costo}
+                            onChange={(e) => {
+                              const copia = [...editingProduct.variantes];
+                              copia[idx] = { ...copia[idx], costo: e.target.value };
+                              setEditingProduct({ ...editingProduct, variantes: copia });
+                            }}
+                            className="w-full h-12 bg-slate-900 border border-slate-700 rounded-xl px-3 text-base text-white font-semibold"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs font-semibold text-slate-400 block mb-1">Precio Venta ($)</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={v.precio}
+                            onChange={(e) => {
+                              const copia = [...editingProduct.variantes];
+                              copia[idx] = { ...copia[idx], precio: e.target.value };
+                              setEditingProduct({ ...editingProduct, variantes: copia });
+                            }}
+                            className="w-full h-12 bg-slate-900 border border-slate-700 rounded-xl px-3 text-base text-white font-semibold"
+                          />
+                        </div>
+                      </div>
+
+                      {/* CONTROL DELIBERADO DE STOCK */}
+                      <div className="pt-1">
+                        <label className="text-xs font-semibold text-slate-400 block mb-1.5">
+                          Stock disponible (Unidades)
+                        </label>
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const copia = [...editingProduct.variantes];
+                              const actual = parseInt(copia[idx].stock, 10);
+                              const numeroBase = Number.isNaN(actual) ? 0 : actual;
+                              copia[idx] = { ...copia[idx], stock: Math.max(0, numeroBase - 1) };
+                              setEditingProduct({ ...editingProduct, variantes: copia });
+                            }}
+                            className="w-14 h-12 bg-slate-800 active:bg-slate-700 border border-slate-700 rounded-xl text-xl font-bold text-white flex items-center justify-center"
+                          >
+                            -
+                          </button>
+
+                          <input
+                            type="number"
+                            value={v.stock}
+                            onChange={(e) => {
+                              const copia = [...editingProduct.variantes];
+                              copia[idx] = { ...copia[idx], stock: e.target.value };
+                              setEditingProduct({ ...editingProduct, variantes: copia });
+                            }}
+                            className="flex-1 h-12 bg-slate-900 border border-indigo-500/50 rounded-xl text-center text-xl font-extrabold text-white"
+                          />
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const copia = [...editingProduct.variantes];
+                              const actual = parseInt(copia[idx].stock, 10);
+                              const numeroBase = Number.isNaN(actual) ? 0 : actual;
+                              copia[idx] = { ...copia[idx], stock: numeroBase + 1 };
+                              setEditingProduct({ ...editingProduct, variantes: copia });
+                            }}
+                            className="w-14 h-12 bg-indigo-600 active:bg-indigo-500 rounded-xl text-xl font-bold text-white flex items-center justify-center"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* BOTÓN PARA AÑADIR NUEVA VARIANTE / COLOR SIN DUPLICAR EL PRODUCTO */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const refVariante = editingProduct.variantes[0] ? editingProduct.variantes[0] : { costo: 0, precio: 0 };
+                    setEditingProduct({
+                      ...editingProduct,
+                      variantes: [
+                        ...editingProduct.variantes,
+                        {
+                          id: 'v-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+                          talla: '',
+                          color: '',
+                          costo: refVariante.costo ?? 0,
+                          precio: refVariante.precio ?? 0,
+                          stock: 1,
+                          stockMinimo: 2,
+                        },
+                      ],
+                    });
+                  }}
+                  className="w-full h-12 bg-indigo-600/15 hover:bg-indigo-600/25 border border-indigo-500/40 text-indigo-300 rounded-xl font-bold text-base flex items-center justify-center gap-2 mt-1"
+                >
+                  <Plus className="w-5 h-5" /> Añadir variante / color
+                </button>
+              </div>
+            </div>
+
+            {/* BOTONES DE CONFIRMACIÓN */}
+            <div className="flex flex-col gap-2.5 mt-2 pt-3 border-t border-slate-800">
+              <button
+                type="button"
+                disabled={isSavingEdit}
+                onClick={handleSaveEditedProduct}
+                className="w-full h-14 bg-indigo-600 hover:bg-indigo-500 active:scale-[0.99] text-white rounded-xl text-base font-bold shadow-lg shadow-indigo-600/30"
+              >
+                {isSavingEdit ? 'Guardando...' : 'Guardar cambios'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditingProduct(null)}
+                className="w-full h-12 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-base font-semibold"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 2: CREAR NUEVA PRENDA */}
+      {showAddProductModal && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-5 shadow-2xl my-auto max-h-[92vh] overflow-y-auto flex flex-col gap-4">
+            <h3 className="text-xl font-bold text-white border-b border-slate-800 pb-3">Agregar Nueva Prenda</h3>
+
+            <div className="flex flex-col gap-3">
+              <div>
+                <label className="text-sm font-semibold text-slate-300 block mb-1">Nombre</label>
                 <input
                   type="text"
                   placeholder="Ej: Falda Plisada"
                   value={newProdName}
                   onChange={(e) => setNewProdName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                  className="w-full h-12 bg-slate-950 border border-slate-700 rounded-xl px-3.5 text-base text-white"
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-xs text-slate-400 block mb-1">Categoría</label>
+                  <label className="text-sm font-semibold text-slate-300 block mb-1">Categoría</label>
                   <input
                     type="text"
                     placeholder="Ej: Ropa"
                     value={newProdCat}
                     onChange={(e) => setNewProdCat(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                    className="w-full h-12 bg-slate-950 border border-slate-700 rounded-xl px-3.5 text-base text-white"
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-slate-400 block mb-1">Subcategoría</label>
+                  <label className="text-sm font-semibold text-slate-300 block mb-1">Subcategoría</label>
                   <input
                     type="text"
                     placeholder="Ej: Medias"
                     value={newProdSubCat}
                     onChange={(e) => setNewProdSubCat(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                    className="w-full h-12 bg-slate-950 border border-slate-700 rounded-xl px-3.5 text-base text-white"
                   />
                 </div>
               </div>
 
-              {/* SECCIÓN DE TALLAS, COLORES, PRECIOS Y STOCK */}
-              <div className="mt-2 border-t border-slate-800 pt-3">
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-xs font-bold text-slate-300">Tallas, Colores y Precios</span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setNewVariants([
-                        ...newVariants,
-                        {
-                          id: 'v-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
-                          talla: '',
-                          color: '',
-                          costo: 0,
-                          precio: 0,
-                          stock: 1,
-                          stockMinimo: 2,
-                        },
-                      ])
-                    }
-                    className="text-[11px] bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 px-2.5 py-1 rounded-lg font-semibold"
-                  >
-                    + Otra Talla/Color
-                  </button>
-                </div>
+              <div className="mt-2 border-t border-slate-800 pt-3 flex flex-col gap-3">
+                <span className="text-base font-bold text-white">Tallas, Colores y Precios</span>
 
-                <div className="flex flex-col gap-3 max-h-60 overflow-y-auto pr-1">
+                <div className="flex flex-col gap-4 max-h-72 overflow-y-auto pr-1">
                   {newVariants.map((v, idx) => (
-                    <div key={v.id} className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex flex-col gap-2">
+                    <div key={v.id} className="bg-slate-950 border border-slate-800 rounded-2xl p-4 flex flex-col gap-3">
                       <div className="flex justify-between items-center">
-                        <span className="text-[11px] font-bold text-indigo-400">Variante #{idx + 1}</span>
+                        <span className="text-sm font-bold text-indigo-400">Variante #{idx + 1}</span>
                         {newVariants.length > 1 && (
                           <button
                             type="button"
                             onClick={() => setNewVariants(newVariants.filter((_, i) => i !== idx))}
-                            className="text-[11px] text-rose-400 hover:underline"
+                            className="text-sm font-semibold text-rose-400"
                           >
                             Quitar
                           </button>
                         )}
                       </div>
 
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="grid grid-cols-2 gap-3">
                         <div>
-                          <label className="text-[10px] text-slate-400 block mb-0.5">Talla</label>
+                          <label className="text-xs font-semibold text-slate-400 block mb-1">Talla</label>
                           <input
                             type="text"
                             placeholder="Ej: S, M, Única"
@@ -1069,11 +1368,11 @@ const handleQuickStock = async (product, variantId, delta) => {
                               copia[idx] = { ...copia[idx], talla: e.target.value };
                               setNewVariants(copia);
                             }}
-                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                            className="w-full h-12 bg-slate-900 border border-slate-700 rounded-xl px-3 text-base text-white font-bold"
                           />
                         </div>
                         <div>
-                          <label className="text-[10px] text-slate-400 block mb-0.5">Color</label>
+                          <label className="text-xs font-semibold text-slate-400 block mb-1">Color</label>
                           <input
                             type="text"
                             placeholder="Ej: Negro, Rojo"
@@ -1083,14 +1382,14 @@ const handleQuickStock = async (product, variantId, delta) => {
                               copia[idx] = { ...copia[idx], color: e.target.value };
                               setNewVariants(copia);
                             }}
-                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                            className="w-full h-12 bg-slate-900 border border-slate-700 rounded-xl px-3 text-base text-white"
                           />
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-3 gap-2">
+                      <div className="grid grid-cols-3 gap-2.5">
                         <div>
-                          <label className="text-[10px] text-slate-400 block mb-0.5">Costo Compra</label>
+                          <label className="text-xs font-semibold text-slate-400 block mb-1">Costo ($)</label>
                           <input
                             type="number"
                             step="0.01"
@@ -1100,11 +1399,11 @@ const handleQuickStock = async (product, variantId, delta) => {
                               copia[idx] = { ...copia[idx], costo: parseFloat(e.target.value) };
                               setNewVariants(copia);
                             }}
-                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-white"
+                            className="w-full h-12 bg-slate-900 border border-slate-700 rounded-xl px-2.5 text-base text-white font-semibold"
                           />
                         </div>
                         <div>
-                          <label className="text-[10px] text-slate-400 block mb-0.5">Precio Venta</label>
+                          <label className="text-xs font-semibold text-slate-400 block mb-1">Venta ($)</label>
                           <input
                             type="number"
                             step="0.01"
@@ -1114,11 +1413,11 @@ const handleQuickStock = async (product, variantId, delta) => {
                               copia[idx] = { ...copia[idx], precio: parseFloat(e.target.value) };
                               setNewVariants(copia);
                             }}
-                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-white"
+                            className="w-full h-12 bg-slate-900 border border-slate-700 rounded-xl px-2.5 text-base text-white font-semibold"
                           />
                         </div>
                         <div>
-                          <label className="text-[10px] text-slate-400 block mb-0.5">Stock Inicial</label>
+                          <label className="text-xs font-semibold text-slate-400 block mb-1">Stock</label>
                           <input
                             type="number"
                             value={v.stock}
@@ -1127,30 +1426,51 @@ const handleQuickStock = async (product, variantId, delta) => {
                               copia[idx] = { ...copia[idx], stock: parseInt(e.target.value, 10) };
                               setNewVariants(copia);
                             }}
-                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-white"
+                            className="w-full h-12 bg-slate-900 border border-slate-700 rounded-xl px-2.5 text-base text-white font-bold text-center"
                           />
                         </div>
                       </div>
                     </div>
                   ))}
                 </div>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setNewVariants([
+                      ...newVariants,
+                      {
+                        id: 'v-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+                        talla: '',
+                        color: '',
+                        costo: 0,
+                        precio: 0,
+                        stock: 1,
+                        stockMinimo: 2,
+                      },
+                    ])
+                  }
+                  className="w-full h-12 bg-indigo-600/15 hover:bg-indigo-600/25 border border-indigo-500/40 text-indigo-300 rounded-xl font-bold text-base flex items-center justify-center gap-2"
+                >
+                  <Plus className="w-5 h-5" /> Añadir variante / color
+                </button>
               </div>
             </div>
 
-            <div className="flex justify-end gap-2 mt-5">
-              <button
-                type="button"
-                onClick={() => setShowAddProductModal(false)}
-                className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl text-xs font-semibold"
-              >
-                Cancelar
-              </button>
+            <div className="flex flex-col gap-2.5 mt-2 pt-3 border-t border-slate-800">
               <button
                 type="button"
                 onClick={handleSaveProduct}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold"
+                className="w-full h-14 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-base font-bold shadow-lg shadow-indigo-600/30"
               >
-                Guardar
+                Guardar Prenda
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowAddProductModal(false)}
+                className="w-full h-12 bg-slate-800 text-slate-300 rounded-xl text-base font-semibold"
+              >
+                Cancelar
               </button>
             </div>
           </div>
