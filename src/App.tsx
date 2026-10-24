@@ -213,7 +213,7 @@ export default function App() {
         setUser(currentUser);
       } else {
         signInAnonymously(auth).catch((err) => {
-          console.warn('Auth Anónima pendiente:', err.message);
+          console.warn('Auth Anónima pendiente:', err?.message);
         });
       }
     });
@@ -231,7 +231,7 @@ export default function App() {
         setProducts(prodList);
         setIsFirebaseConnected(true);
       },
-      (error) => console.warn('Firestore products:', error.message)
+      (error) => console.warn('Firestore products:', error?.message)
     );
 
     const qSales = query(collection(db, 'sales'), orderBy('timestamp', 'desc'), limit(60));
@@ -244,7 +244,7 @@ export default function App() {
         }));
         setSales(salesList);
       },
-      (error) => console.warn('Firestore sales:', error.message)
+      (error) => console.warn('Firestore sales:', error?.message)
     );
 
     return () => {
@@ -257,7 +257,7 @@ export default function App() {
   const categories = useMemo(() => {
     const cats = new Set(['Todas']);
     products.forEach((p) => {
-      if (p.categoria) cats.add(p.categoria);
+      if (p?.categoria) cats.add(p.categoria);
     });
     return Array.from(cats);
   }, [products]);
@@ -266,16 +266,16 @@ export default function App() {
   const filteredProducts = useMemo(() => {
     const term = searchTerm.toLowerCase().trim();
     return products.filter((p) => {
-      const matchCat = selectedCatFilter === 'Todas' ? true : p.categoria === selectedCatFilter;
+      const matchCat = selectedCatFilter === 'Todas' ? true : p?.categoria === selectedCatFilter;
       if (!matchCat) return false;
       if (!term) return true;
 
-      const matchNombre = String(p.nombre ?? '').toLowerCase().includes(term);
-      const matchSub = String(p.subcategoria ?? '').toLowerCase().includes(term);
-      const listaVar = Array.isArray(p.variantes) ? p.variantes : [];
+      const matchNombre = String(p?.nombre ?? '').toLowerCase().includes(term);
+      const matchSub = String(p?.subcategoria ?? '').toLowerCase().includes(term);
+      const listaVar = Array.isArray(p?.variantes) ? p.variantes : [];
       const matchVariante = listaVar.some((v) => {
-        const c = String(v.color ?? '').toLowerCase();
-        const t = String(v.talla ?? '').toLowerCase();
+        const c = String(v?.color ?? '').toLowerCase();
+        const t = String(v?.talla ?? '').toLowerCase();
         return c.includes(term) ? true : t.includes(term);
       });
 
@@ -286,10 +286,10 @@ export default function App() {
   // KPI EN TIEMPO REAL: TOTAL INVERTIDO (Capital en Inventario)
   const totalInvertido = useMemo(() => {
     return products.reduce((totalAcumulado, prod) => {
-      const listaVariantes = Array.isArray(prod.variantes) ? prod.variantes : [];
+      const listaVariantes = Array.isArray(prod?.variantes) ? prod.variantes : [];
       const inversionPrenda = listaVariantes.reduce((subTotal, v) => {
-        const stockActual = Math.max(0, Number(v.stock ?? 0));
-        const precioCosto = Math.max(0, Number(v.costo ?? 0));
+        const stockActual = Math.max(0, Number(v?.stock ?? 0));
+        const precioCosto = Math.max(0, Number(v?.costo ?? 0));
         return subTotal + stockActual * precioCosto;
       }, 0);
       return totalAcumulado + inversionPrenda;
@@ -298,15 +298,19 @@ export default function App() {
 
   const totalUnidadesFisicas = useMemo(() => {
     return products.reduce((totalUnidades, prod) => {
-      const listaVariantes = Array.isArray(prod.variantes) ? prod.variantes : [];
+      const listaVariantes = Array.isArray(prod?.variantes) ? prod.variantes : [];
       return (
         totalUnidades +
-        listaVariantes.reduce((acc, v) => acc + Math.max(0, Number(v.stock ?? 0)), 0)
+        listaVariantes.reduce((acc, v) => acc + Math.max(0, Number(v?.stock ?? 0)), 0)
       );
     }, 0);
   }, [products]);
 
-  // Métricas de ventas
+  // CÁLCULO EXACTO DE MÉTRICAS Y GANANCIA NETA (Solo ventas activas)
+  const activeSales = useMemo(() => {
+    return sales.filter((s) => Boolean(s) && !s?.anulada);
+  }, [sales]);
+
   const metrics = useMemo(() => {
     let totalIngresos = 0;
     let gananciaNeta = 0;
@@ -314,64 +318,109 @@ export default function App() {
     let porQR = 0;
     let porTarjeta = 0;
 
-    sales.forEach((s) => {
-      const monto = Number(s.total ?? 0);
-      const costoTotal = Number(s.costoUnitario ?? 0) * Number(s.cantidad ?? 1);
-      totalIngresos += monto;
-      gananciaNeta += monto - costoTotal;
+    activeSales.forEach((s) => {
+      const cantidad = Math.max(1, Number(s?.cantidad ?? 1));
+      const totalCobrado = Math.max(0, Number(s?.total ?? 0));
+      const costoUnitario = Math.max(0, Number(s?.costoUnitario ?? 0));
+      const costoTotal = costoUnitario * cantidad;
 
-      if (s.metodoPago === 'Efectivo') porEfectivo += monto;
-      else if (s.metodoPago === 'QR') porQR += monto;
-      else porTarjeta += monto;
+      totalIngresos += totalCobrado;
+      gananciaNeta += totalCobrado - costoTotal;
+
+      if (s?.metodoPago === 'Efectivo') porEfectivo += totalCobrado;
+      else if (s?.metodoPago === 'QR') porQR += totalCobrado;
+      else porTarjeta += totalCobrado;
     });
 
-    return { totalIngresos, gananciaNeta, porEfectivo, porQR, porTarjeta };
-  }, [sales]);
+    if (activeSales.length === 0) {
+      return {
+        totalIngresos: 0,
+        gananciaNeta: 0,
+        porEfectivo: 0,
+        porQR: 0,
+        porTarjeta: 0,
+      };
+    }
 
-  // Seleccionar una variante para vender
+    return { totalIngresos, gananciaNeta, porEfectivo, porQR, porTarjeta };
+  }, [activeSales]);
+
+  // Validación estricta del monto a cobrar (mayor a 0 y numérico)
+  const parsedSaleTotal = useMemo(() => {
+    const textoLimpio = String(manualTotalInput ?? '').trim();
+    if (!textoLimpio) return NaN;
+    return parseFloat(textoLimpio);
+  }, [manualTotalInput]);
+
+  const isSaleTotalValid = useMemo(() => {
+    return !Number.isNaN(parsedSaleTotal) && parsedSaleTotal > 0;
+  }, [parsedSaleTotal]);
+
+  // 1. Seleccionar una variante para vender (Inicialización obligatoria de precioVenta * cantidad)
   const handleSelectVariantForSale = (product, variant) => {
-    if (Number(variant.stock ?? 0) <= 0) {
+    if (Number(variant?.stock ?? 0) <= 0) {
       alert('Esta variante no tiene stock disponible.');
       return;
     }
+    const cantidadInicial = 1;
+    const precioVenta = Math.max(0, Number(variant?.precio ?? 0));
+    const totalInicial = precioVenta * cantidadInicial;
+
     setCartItem({ product, variant });
-    setCartQty(1);
+    setCartQty(cantidadInicial);
     setPaymentMethod('Efectivo');
-    setManualTotalInput(String(Number(variant.precio ?? 0).toFixed(2)));
+    setManualTotalInput(totalInicial > 0 ? totalInicial.toFixed(2) : '');
   };
 
-  // Cambiar cantidad en el carrito
+  // Cambiar cantidad en el carrito actualizando automáticamente (precioVenta * cantidad)
   const handleQtyChange = (delta) => {
     if (!cartItem) return;
-    const maxStock = Number(cartItem.variant.stock ?? 1);
+    const maxStock = Math.max(1, Number(cartItem?.variant?.stock ?? 1));
     const nextQty = Math.max(1, Math.min(maxStock, cartQty + delta));
+    const precioVenta = Math.max(0, Number(cartItem?.variant?.precio ?? 0));
+    const nuevoSubtotal = precioVenta * nextQty;
+
     setCartQty(nextQty);
-    const nuevoSubtotal = nextQty * Number(cartItem.variant.precio ?? 0);
-    setManualTotalInput(String(nuevoSubtotal.toFixed(2)));
+    setManualTotalInput(nuevoSubtotal > 0 ? nuevoSubtotal.toFixed(2) : '');
   };
 
-  // Confirmar y registrar venta
+  // 2. Confirmar y registrar venta (Bloqueando ventas en $0.00 o NaN)
   const handleConfirmSale = async () => {
     if (!cartItem ? true : isProcessingSale) return;
+
+    if (!isSaleTotalValid) {
+      alert('El total a cobrar debe ser mayor a $0.00 para registrar la venta.');
+      return;
+    }
+
     const { product, variant } = cartItem;
-    const qty = Number(cartQty);
-    const precioFinal = parseFloat(manualTotalInput);
-    const totalCobrado = Number.isNaN(precioFinal)
-      ? qty * Number(variant.precio ?? 0)
-      : Math.max(0, precioFinal);
+    const qty = Math.max(1, Number(cartQty ?? 1));
+    const totalCobrado = Number(parsedSaleTotal.toFixed(2));
+    const precioUnit = Math.max(0, Number(variant?.precio ?? 0));
+    const costoUnit = Math.max(0, Number(variant?.costo ?? 0));
 
     setIsProcessingSale(true);
     try {
-      if (user && isFirebaseConnected && !String(product.id).startsWith('local-')) {
+      const prodId = product?.id ? String(product.id) : '';
+
+      if (user && isFirebaseConnected && prodId && !prodId.startsWith('local-')) {
         await runTransaction(db, async (transaction) => {
-          const prodRef = doc(db, 'products', product.id);
+          const prodRef = doc(db, 'products', prodId);
           const prodSnap = await transaction.get(prodRef);
-          if (!prodSnap.exists()) throw new Error('El producto ya no existe.');
+          if (!prodSnap.exists()) throw new Error('El producto ya no existe en el inventario.');
 
           const data = prodSnap.data();
-          const variantesActualizadas = (data.variantes ?? []).map((v) => {
-            if (v.id === variant.id) {
-              const stockDisp = Number(v.stock ?? 0);
+          const listaVariantes = Array.isArray(data?.variantes) ? data.variantes : [];
+
+          const variantesActualizadas = listaVariantes.map((v) => {
+            const mismoId = Boolean(v?.id && variant?.id && v.id === variant.id);
+            const mismoColorTalla =
+              !mismoId &&
+              String(v?.color ?? '') === String(variant?.color ?? '') &&
+              String(v?.talla ?? '') === String(variant?.talla ?? '');
+
+            if (mismoId ? true : mismoColorTalla) {
+              const stockDisp = Number(v?.stock ?? 0);
               if (stockDisp < qty) {
                 throw new Error(`Stock insuficiente. Solo quedan ${stockDisp} unidades.`);
               }
@@ -384,14 +433,14 @@ export default function App() {
 
           const nuevaVentaRef = doc(collection(db, 'sales'));
           transaction.set(nuevaVentaRef, {
-            productId: product.id,
-            variantId: variant.id,
-            productoNombre: product.nombre,
-            talla: variant.talla,
-            color: variant.color,
+            productId: prodId,
+            variantId: variant?.id ?? '',
+            productoNombre: product?.nombre ?? 'Prenda',
+            talla: variant?.talla ?? 'Única',
+            color: variant?.color ?? 'General',
             cantidad: qty,
-            precioUnitario: Number(variant.precio ?? 0),
-            costoUnitario: Number(variant.costo ?? 0),
+            precioUnitario: precioUnit,
+            costoUnitario: costoUnit,
             total: totalCobrado,
             metodoPago: paymentMethod,
             timestamp: serverTimestamp(),
@@ -401,11 +450,12 @@ export default function App() {
       } else {
         setProducts((prev) =>
           prev.map((p) => {
-            if (p.id !== product.id) return p;
+            if (p?.id !== product?.id) return p;
+            const vars = Array.isArray(p?.variantes) ? p.variantes : [];
             return {
               ...p,
-              variantes: p.variantes.map((v) =>
-                v.id === variant.id ? { ...v, stock: Math.max(0, v.stock - qty) } : v
+              variantes: vars.map((v) =>
+                v?.id === variant?.id ? { ...v, stock: Math.max(0, Number(v?.stock ?? 0) - qty) } : v
               ),
             };
           })
@@ -413,47 +463,126 @@ export default function App() {
       }
 
       setSaleSuccessMessage(
-        `Venta registrada: ${qty}x ${product.nombre} (${variant.color}) por $${totalCobrado.toFixed(2)}`
+        `Venta registrada: ${qty}x ${product?.nombre ?? ''} (${variant?.color ?? ''}) por $${totalCobrado.toFixed(2)}`
       );
       setTimeout(() => setSaleSuccessMessage(null), 4000);
       setCartItem(null);
     } catch (err) {
-      alert('No se pudo completar la venta: ' + err.message);
+      alert('No se pudo completar la venta: ' + (err?.message ?? 'Error desconocido'));
     } finally {
       setIsProcessingSale(false);
     }
   };
 
-  // Anular venta y devolver stock al inventario
+  // 3. ANULAR VENTA CON VALIDACIÓN SEGURA Y MODO "ELIMINACIÓN FORZADA / LIMPIEZA"
   const handleAnnulSale = async (sale) => {
-    const confirmar = window.confirm(
-      `¿Anular venta de "${sale.productoNombre} (${sale.color})" y devolver ${sale.cantidad} un. al stock?`
-    );
-    if (!confirmar) return;
+    if (!sale) return;
 
-    setAnnulLoadingId(sale.id);
+    const saleId = sale?.id ? String(sale.id).trim() : '';
+    const nombrePrenda = sale?.productoNombre ?? sale?.nombre ?? 'Prenda';
+    const colorPrenda = sale?.color ?? '';
+    const cantidadDevuelta = Math.max(1, Number(sale?.cantidad ?? 1));
+
+    setAnnulLoadingId(saleId ? saleId : 'temp-id');
+
     try {
-      if (user && isFirebaseConnected) {
-        await runTransaction(db, async (transaction) => {
-          const prodRef = doc(db, 'products', sale.productId);
-          const saleRef = doc(db, 'sales', sale.id);
-          const prodSnap = await transaction.get(prodRef);
+      // Buscar el producto de forma defensiva en el estado actual
+      const rawProdId = sale?.productId ?? sale?.prodId ?? '';
+      const validProdId = typeof rawProdId === 'string' ? rawProdId.trim() : '';
 
-          if (prodSnap.exists()) {
-            const data = prodSnap.data();
-            const variantesRestauradas = (data.variantes ?? []).map((v) => {
-              if (v.id === sale.variantId) {
-                return { ...v, stock: Number(v.stock ?? 0) + Number(sale.cantidad ?? 1) };
-              }
-              return v;
-            });
-            transaction.update(prodRef, { variantes: variantesRestauradas });
+      const productoEnInventario = products.find((p) => {
+        if (!p) return false;
+        if (validProdId && p?.id && String(p.id) === validProdId) return true;
+        const nombreProd = String(p?.nombre ?? '').trim().toLowerCase();
+        const nombreVenta = String(nombrePrenda).trim().toLowerCase();
+        return Boolean(nombreProd && nombreVenta && nombreProd === nombreVenta);
+      });
+
+      const variantes = Array.isArray(productoEnInventario?.variantes)
+        ? productoEnInventario.variantes
+        : [];
+
+      // Buscar la variante de forma defensiva (.findIndex con validación segura)
+      const variantIndex = variantes.findIndex((v) => {
+        if (!v) return false;
+        const tieneId = Boolean(v?.id && sale?.variantId);
+        if (tieneId && String(v.id) === String(sale.variantId)) {
+          return true;
+        }
+        const colorV = String(v?.color ?? '').trim().toLowerCase();
+        const colorS = String(sale?.color ?? '').trim().toLowerCase();
+        const tallaV = String(v?.talla ?? '').trim().toLowerCase();
+        const tallaS = String(sale?.talla ?? '').trim().toLowerCase();
+
+        if (colorV && colorS && colorV === colorS) {
+          return tallaS ? tallaV === tallaS : true;
+        }
+        return false;
+      });
+
+      const existeProductoYVariante = Boolean(productoEnInventario && variantIndex !== -1);
+
+      // CASO A: El producto y la variante existen -> Restaurar stock y borrar la venta
+      if (existeProductoYVariante) {
+        const confirmar = window.confirm(
+          `¿Anular venta de "${nombrePrenda} (${colorPrenda})" y devolver ${cantidadDevuelta} un. al inventario?`
+        );
+        if (!confirmar) {
+          setAnnulLoadingId(null);
+          return;
+        }
+
+        const nuevasVariantes = variantes.map((v, idx) => {
+          if (idx === variantIndex) {
+            return {
+              ...v,
+              stock: Math.max(0, Number(v?.stock ?? 0)) + cantidadDevuelta,
+            };
           }
-          transaction.delete(saleRef);
+          return v;
         });
+
+        const targetProdId = String(productoEnInventario.id ?? '').trim();
+
+        if (user && isFirebaseConnected && targetProdId && !targetProdId.startsWith('local-')) {
+          const prodRef = doc(db, 'products', targetProdId);
+          await updateDoc(prodRef, { variantes: nuevasVariantes });
+        }
+
+        if (user && isFirebaseConnected && saleId && !saleId.startsWith('local-')) {
+          const saleRef = doc(db, 'sales', saleId);
+          await deleteDoc(saleRef);
+        }
+
+        // Actualizar estado en pantalla inmediatamente
+        setProducts((prev) =>
+          prev.map((p) => (p?.id === productoEnInventario.id ? { ...p, variantes: nuevasVariantes } : p))
+        );
+        setSales((prev) => prev.filter((item) => item?.id !== sale?.id));
+      } else {
+        // CASO B: Modo "Eliminación forzada / Limpieza" si el producto o variante ya no existe
+        const confirmarLimpieza = window.confirm(
+          'No se encontró el producto en inventario. ¿Deseas eliminar el registro de venta de todas formas?'
+        );
+        if (!confirmarLimpieza) {
+          setAnnulLoadingId(null);
+          return;
+        }
+
+        if (user && isFirebaseConnected && saleId && !saleId.startsWith('local-')) {
+          const saleRef = doc(db, 'sales', saleId);
+          await deleteDoc(saleRef);
+        }
+
+        // Limpiar inmediatamente del estado local para que el arqueo y ganancia neta se corrijan al instante
+        setSales((prev) => prev.filter((item) => item?.id !== sale?.id));
       }
     } catch (err) {
-      alert('Error al anular venta: ' + err.message);
+      console.error('Error controlado al anular venta:', err);
+      alert(
+        'No se pudo completar la operación automáticamente. Detalle: ' +
+          (err?.message ?? 'Error de conexión')
+      );
     } finally {
       setAnnulLoadingId(null);
     }
@@ -467,13 +596,13 @@ export default function App() {
     }
 
     const variantesLimpias = newVariants.map((v) => ({
-      id: v.id ? v.id : 'v-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
-      talla: String(v.talla ?? '').trim() ? String(v.talla).trim() : 'Única',
-      color: String(v.color ?? '').trim() ? String(v.color).trim() : 'Negro',
-      costo: Number.isNaN(Number(v.costo)) ? 0 : Math.max(0, Number(v.costo)),
-      precio: Number.isNaN(Number(v.precio)) ? 0 : Math.max(0, Number(v.precio)),
-      stock: Number.isNaN(parseInt(v.stock, 10)) ? 0 : Math.max(0, parseInt(v.stock, 10)),
-      stockMinimo: Number.isNaN(parseInt(v.stockMinimo, 10))
+      id: v?.id ? v.id : 'v-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+      talla: String(v?.talla ?? '').trim() ? String(v.talla).trim() : 'Única',
+      color: String(v?.color ?? '').trim() ? String(v.color).trim() : 'Negro',
+      costo: Number.isNaN(Number(v?.costo)) ? 0 : Math.max(0, Number(v.costo)),
+      precio: Number.isNaN(Number(v?.precio)) ? 0 : Math.max(0, Number(v.precio)),
+      stock: Number.isNaN(parseInt(v?.stock, 10)) ? 0 : Math.max(0, parseInt(v.stock, 10)),
+      stockMinimo: Number.isNaN(parseInt(v?.stockMinimo, 10))
         ? 2
         : Math.max(0, parseInt(v.stockMinimo, 10)),
     }));
@@ -509,27 +638,29 @@ export default function App() {
       ]);
       setShowAddProductModal(false);
     } catch (err) {
-      alert('Error al guardar prenda: ' + err.message);
+      alert('Error al guardar prenda: ' + (err?.message ?? 'Error desconocido'));
     }
   };
 
   // Abrir Modal de Edición al pulsar una prenda en Inventario
   const openEditModal = (product) => {
-    const variantesCopia = (Array.isArray(product.variantes) ? product.variantes : []).map((v) => ({
-      id: v.id ? v.id : 'v-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
-      talla: v.talla ?? 'Única',
-      color: v.color ?? '',
-      costo: Number(v.costo ?? 0),
-      precio: Number(v.precio ?? 0),
-      stock: Number(v.stock ?? 0),
-      stockMinimo: Number(v.stockMinimo ?? 2),
-    }));
+    const variantesCopia = (Array.isArray(product?.variantes) ? product.variantes : []).map(
+      (v) => ({
+        id: v?.id ? v.id : 'v-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+        talla: v?.talla ?? 'Única',
+        color: v?.color ?? '',
+        costo: Number(v?.costo ?? 0),
+        precio: Number(v?.precio ?? 0),
+        stock: Number(v?.stock ?? 0),
+        stockMinimo: Number(v?.stockMinimo ?? 2),
+      })
+    );
 
     setEditingProduct({
       ...product,
-      nombre: product.nombre ?? '',
-      categoria: product.categoria ?? 'Ropa',
-      subcategoria: product.subcategoria ?? 'General',
+      nombre: product?.nombre ?? '',
+      categoria: product?.categoria ?? 'Ropa',
+      subcategoria: product?.subcategoria ?? 'General',
       variantes: variantesCopia,
     });
   };
@@ -545,13 +676,13 @@ export default function App() {
     setIsSavingEdit(true);
     try {
       const variantesLimpias = editingProduct.variantes.map((v) => ({
-        id: v.id ? v.id : 'v-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
-        talla: String(v.talla ?? '').trim() ? String(v.talla).trim() : 'Única',
-        color: String(v.color ?? '').trim() ? String(v.color).trim() : 'General',
-        costo: Number.isNaN(Number(v.costo)) ? 0 : Math.max(0, Number(v.costo)),
-        precio: Number.isNaN(Number(v.precio)) ? 0 : Math.max(0, Number(v.precio)),
-        stock: Number.isNaN(parseInt(v.stock, 10)) ? 0 : Math.max(0, parseInt(v.stock, 10)),
-        stockMinimo: Number.isNaN(parseInt(v.stockMinimo, 10))
+        id: v?.id ? v.id : 'v-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+        talla: String(v?.talla ?? '').trim() ? String(v.talla).trim() : 'Única',
+        color: String(v?.color ?? '').trim() ? String(v.color).trim() : 'General',
+        costo: Number.isNaN(Number(v?.costo)) ? 0 : Math.max(0, Number(v.costo)),
+        precio: Number.isNaN(Number(v?.precio)) ? 0 : Math.max(0, Number(v.precio)),
+        stock: Number.isNaN(parseInt(v?.stock, 10)) ? 0 : Math.max(0, parseInt(v.stock, 10)),
+        stockMinimo: Number.isNaN(parseInt(v?.stockMinimo, 10))
           ? 2
           : Math.max(0, parseInt(v.stockMinimo, 10)),
       }));
@@ -564,8 +695,10 @@ export default function App() {
         variantes: variantesLimpias,
       };
 
-      if (user && isFirebaseConnected && !String(editingProduct.id).startsWith('local-')) {
-        await updateDoc(doc(db, 'products', editingProduct.id), {
+      const editId = editingProduct?.id ? String(editingProduct.id).trim() : '';
+
+      if (user && isFirebaseConnected && editId && !editId.startsWith('local-')) {
+        await updateDoc(doc(db, 'products', editId), {
           nombre: prendaActualizada.nombre,
           categoria: prendaActualizada.categoria,
           subcategoria: prendaActualizada.subcategoria,
@@ -574,11 +707,11 @@ export default function App() {
       }
 
       setProducts((prev) =>
-        prev.map((p) => (p.id === prendaActualizada.id ? prendaActualizada : p))
+        prev.map((p) => (p?.id === prendaActualizada.id ? prendaActualizada : p))
       );
       setEditingProduct(null);
     } catch (err) {
-      alert('Error al guardar cambios: ' + err.message);
+      alert('Error al guardar cambios: ' + (err?.message ?? 'Error desconocido'));
     } finally {
       setIsSavingEdit(false);
     }
@@ -587,18 +720,19 @@ export default function App() {
   // Eliminar prenda completa
   const handleDeleteProduct = async (product) => {
     const seguro = window.confirm(
-      `¿Seguro que deseas eliminar "${product.nombre}" de tu catálogo?`
+      `¿Seguro que deseas eliminar "${product?.nombre ?? 'esta prenda'}" de tu catálogo?`
     );
     if (!seguro) return;
 
     try {
-      if (user && isFirebaseConnected && !String(product.id).startsWith('local-')) {
-        await deleteDoc(doc(db, 'products', product.id));
+      const prodId = product?.id ? String(product.id).trim() : '';
+      if (user && isFirebaseConnected && prodId && !prodId.startsWith('local-')) {
+        await deleteDoc(doc(db, 'products', prodId));
       }
-      setProducts((prev) => prev.filter((p) => p.id !== product.id));
+      setProducts((prev) => prev.filter((p) => p?.id !== product?.id));
       setEditingProduct(null);
     } catch (err) {
-      alert('Error al eliminar: ' + err.message);
+      alert('Error al eliminar: ' + (err?.message ?? 'Error desconocido'));
     }
   };
 
@@ -703,10 +837,10 @@ export default function App() {
 
                   {/* TARJETAS DE VARIANTES: COLOR PRINCIPAL + SWATCH + TALLA SECUNDARIA */}
                   <div className="grid grid-cols-1 gap-2.5">
-                    {(p.variantes ?? []).map((v) => {
-                      const agotado = Number(v.stock ?? 0) <= 0;
+                    {(p?.variantes ?? []).map((v) => {
+                      const agotado = Number(v?.stock ?? 0) <= 0;
                       const pocoStock =
-                        !agotado && Number(v.stock ?? 0) <= Number(v.stockMinimo ?? 2);
+                        !agotado && Number(v?.stock ?? 0) <= Number(v?.stockMinimo ?? 2);
 
                       return (
                         <button
@@ -720,27 +854,25 @@ export default function App() {
                               : 'bg-slate-950 hover:bg-slate-800/90 active:scale-[0.99] border-slate-800 hover:border-indigo-500/50 shadow-sm'
                           }`}
                         >
-                          {/* Fila Superior: Swatch + Color en Negrita a la izquierda, Precio en Verde a la derecha */}
                           <div className="flex items-center justify-between gap-2 w-full">
                             <div className="flex items-center gap-2.5 flex-wrap">
                               <span
                                 className="w-5 h-5 rounded-full border shrink-0 shadow-sm"
-                                style={getColorSwatchStyle(v.color)}
+                                style={getColorSwatchStyle(v?.color)}
                               />
                               <span className="text-lg font-bold text-white leading-tight">
-                                {v.color ? v.color : 'Sin color'}
+                                {v?.color ? v.color : 'Sin color'}
                               </span>
                               <span className="text-xs text-slate-400 bg-slate-900 border border-slate-800 px-2.5 py-0.5 rounded-md font-medium">
-                                Talla: {v.talla ? v.talla : 'Única'}
+                                Talla: {v?.talla ? v.talla : 'Única'}
                               </span>
                             </div>
 
                             <span className="text-lg font-semibold text-emerald-400 shrink-0">
-                              ${Number(v.precio ?? 0).toFixed(2)}
+                              ${Number(v?.precio ?? 0).toFixed(2)}
                             </span>
                           </div>
 
-                          {/* Fila Inferior: Stock con su alerta visual */}
                           <div className="flex items-center justify-between pt-1 border-t border-slate-900 text-xs">
                             {agotado ? (
                               <span className="text-rose-400 font-bold flex items-center gap-1.5">
@@ -748,11 +880,11 @@ export default function App() {
                               </span>
                             ) : pocoStock ? (
                               <span className="text-amber-400 font-bold flex items-center gap-1.5">
-                                <AlertTriangle className="w-4 h-4" /> ¡Stock bajo! Quedan {v.stock} un.
+                                <AlertTriangle className="w-4 h-4" /> ¡Stock bajo! Quedan {v?.stock} un.
                               </span>
                             ) : (
                               <span className="text-slate-400 font-medium">
-                                Disponible: <strong className="text-slate-200">{v.stock} un.</strong>
+                                Disponible: <strong className="text-slate-200">{v?.stock} un.</strong>
                               </span>
                             )}
 
@@ -813,7 +945,7 @@ export default function App() {
             Toca cualquier prenda para editar su stock, añadir colores/tallas o modificar precios.
           </p>
 
-          {/* LISTA DE PRENDAS (SOLO LECTURA PARA PREVENIR TOQUES ACCIDENTALES) */}
+          {/* LISTA DE PRENDAS (SOLO LECTURA) */}
           <div className="flex flex-col gap-4">
             {products.length === 0 ? (
               <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-8 text-center text-slate-300 text-base">
@@ -839,12 +971,11 @@ export default function App() {
                     </span>
                   </div>
 
-                  {/* Tarjetas de variantes en Inventario con jerarquía de Color + Swatch */}
                   <div className="flex flex-col gap-2.5">
-                    {(p.variantes ?? []).map((v) => {
-                      const agotado = Number(v.stock ?? 0) <= 0;
+                    {(p?.variantes ?? []).map((v) => {
+                      const agotado = Number(v?.stock ?? 0) <= 0;
                       const pocoStock =
-                        !agotado && Number(v.stock ?? 0) <= Number(v.stockMinimo ?? 2);
+                        !agotado && Number(v?.stock ?? 0) <= Number(v?.stockMinimo ?? 2);
 
                       return (
                         <div
@@ -855,24 +986,24 @@ export default function App() {
                             <div className="flex items-center gap-2.5 flex-wrap">
                               <span
                                 className="w-5 h-5 rounded-full border shrink-0 shadow-sm"
-                                style={getColorSwatchStyle(v.color)}
+                                style={getColorSwatchStyle(v?.color)}
                               />
                               <span className="text-lg font-bold text-white leading-tight">
-                                {v.color ? v.color : 'Sin color'}
+                                {v?.color ? v.color : 'Sin color'}
                               </span>
                               <span className="text-xs text-slate-400 bg-slate-900 border border-slate-800 px-2.5 py-0.5 rounded-md font-medium">
-                                Talla: {v.talla ? v.talla : 'Única'}
+                                Talla: {v?.talla ? v.talla : 'Única'}
                               </span>
                             </div>
 
                             <span className="text-lg font-semibold text-emerald-400 shrink-0">
-                              ${Number(v.precio ?? 0).toFixed(2)}
+                              ${Number(v?.precio ?? 0).toFixed(2)}
                             </span>
                           </div>
 
                           <div className="flex items-center justify-between pt-1.5 border-t border-slate-900 text-xs">
                             <span className="text-slate-400">
-                              Costo: <strong className="text-slate-300">${Number(v.costo ?? 0).toFixed(2)}</strong>
+                              Costo: <strong className="text-slate-300">${Number(v?.costo ?? 0).toFixed(2)}</strong>
                             </span>
 
                             {agotado ? (
@@ -881,11 +1012,11 @@ export default function App() {
                               </span>
                             ) : pocoStock ? (
                               <span className="px-2.5 py-0.5 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/30 font-bold">
-                                Stock bajo: {v.stock} un. (Mín {v.stockMinimo})
+                                Stock bajo: {v?.stock} un. (Mín {v?.stockMinimo})
                               </span>
                             ) : (
                               <span className="px-2.5 py-0.5 rounded-lg bg-slate-800 text-white font-bold text-sm">
-                                Stock: {v.stock} un.
+                                Stock: {v?.stock} un.
                               </span>
                             )}
                           </div>
@@ -916,7 +1047,11 @@ export default function App() {
             </div>
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
               <span className="text-sm text-slate-400 font-semibold block">Ganancia Neta</span>
-              <span className="text-2xl font-extrabold text-indigo-400 mt-1 block">
+              <span
+                className={`text-2xl font-extrabold mt-1 block ${
+                  metrics.gananciaNeta < 0 ? 'text-rose-400' : 'text-indigo-400'
+                }`}
+              >
                 ${metrics.gananciaNeta.toFixed(2)}
               </span>
             </div>
@@ -946,55 +1081,57 @@ export default function App() {
             </div>
           </div>
 
-          {/* HISTORIAL DE VENTAS RECIENTES */}
+          {/* HISTORIAL DE VENTAS ACTIVAS */}
           <div className="flex flex-col gap-3">
             <h3 className="text-lg font-bold text-white">Historial de Ventas</h3>
-            {sales.length === 0 ? (
+            {activeSales.length === 0 ? (
               <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 text-center text-slate-400 text-base">
-                Aún no hay ventas registradas.
+                Aún no hay ventas activas registradas.
               </div>
             ) : (
-              sales.map((s) => (
+              activeSales.map((s) => (
                 <div
                   key={s.id}
                   className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col gap-3"
                 >
                   <div className="flex justify-between items-start gap-2">
                     <div>
-                      <h4 className="text-lg font-bold text-white">{s.productoNombre}</h4>
+                      <h4 className="text-lg font-bold text-white">{s?.productoNombre ?? 'Prenda'}</h4>
                       <div className="flex items-center gap-2 mt-1 flex-wrap">
                         <span
                           className="w-4 h-4 rounded-full border shrink-0"
-                          style={getColorSwatchStyle(s.color)}
+                          style={getColorSwatchStyle(s?.color)}
                         />
-                        <span className="text-base font-bold text-slate-200">{s.color}</span>
+                        <span className="text-base font-bold text-slate-200">
+                          {s?.color ?? 'General'}
+                        </span>
                         <span className="text-xs text-slate-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
-                          Talla: {s.talla}
+                          Talla: {s?.talla ?? 'Única'}
                         </span>
                       </div>
                       <span className="text-sm text-slate-400 block mt-1">
-                        Cant: <strong className="text-white">{s.cantidad}</strong> • Pago:{' '}
-                        <strong className="text-white">{s.metodoPago}</strong>
+                        Cant: <strong className="text-white">{s?.cantidad ?? 1}</strong> • Pago:{' '}
+                        <strong className="text-white">{s?.metodoPago ?? 'Efectivo'}</strong>
                       </span>
                     </div>
 
                     <div className="text-right">
                       <span className="text-lg font-bold text-emerald-400 block">
-                        ${Number(s.total ?? 0).toFixed(2)}
+                        ${Number(s?.total ?? 0).toFixed(2)}
                       </span>
-                      <span className="text-xs text-slate-500">{s.fechaLocal ?? ''}</span>
+                      <span className="text-xs text-slate-500">{s?.fechaLocal ?? ''}</span>
                     </div>
                   </div>
 
                   <button
                     type="button"
-                    disabled={annulLoadingId === s.id}
+                    disabled={annulLoadingId === s?.id}
                     onClick={() => handleAnnulSale(s)}
-                    className="w-full h-11 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-colors"
+                    className="w-full h-12 bg-rose-500/10 hover:bg-rose-500/20 active:scale-[0.99] border border-rose-500/30 text-rose-300 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all"
                   >
                     <Trash2 className="w-4 h-4" />
-                    {annulLoadingId === s.id
-                      ? 'Anulando...'
+                    {annulLoadingId === s?.id
+                      ? 'Procesando anulación...'
                       : 'Anular venta y restaurar stock'}
                   </button>
                 </div>
@@ -1014,15 +1151,19 @@ export default function App() {
               <span className="text-xs font-bold uppercase tracking-wider text-indigo-400">
                 Confirmar Venta
               </span>
-              <h3 className="text-xl font-bold text-white mt-0.5">{cartItem.product.nombre}</h3>
+              <h3 className="text-xl font-bold text-white mt-0.5">
+                {cartItem?.product?.nombre}
+              </h3>
               <div className="flex items-center gap-2.5 mt-2">
                 <span
                   className="w-5 h-5 rounded-full border shrink-0"
-                  style={getColorSwatchStyle(cartItem.variant.color)}
+                  style={getColorSwatchStyle(cartItem?.variant?.color)}
                 />
-                <span className="text-lg font-bold text-white">{cartItem.variant.color}</span>
+                <span className="text-lg font-bold text-white">
+                  {cartItem?.variant?.color}
+                </span>
                 <span className="text-xs text-slate-400 bg-slate-950 px-2.5 py-1 rounded-md border border-slate-800">
-                  Talla: {cartItem.variant.talla}
+                  Talla: {cartItem?.variant?.talla}
                 </span>
               </div>
             </div>
@@ -1030,7 +1171,7 @@ export default function App() {
             {/* Selector de Cantidad */}
             <div>
               <label className="text-sm font-semibold text-slate-300 block mb-2">
-                Cantidad a vender (Disponible: {cartItem.variant.stock} un.)
+                Cantidad a vender (Disponible: {cartItem?.variant?.stock} un.)
               </label>
               <div className="flex items-center gap-3">
                 <button
@@ -1076,26 +1217,47 @@ export default function App() {
               </div>
             </div>
 
-            {/* Total a cobrar editable (para descuentos o rebajas) */}
+            {/* Total a cobrar obligatorio > 0 */}
             <div>
-              <label className="text-sm font-semibold text-slate-300 block mb-1.5">
-                Total a Cobrar ($) — Editable por descuento
-              </label>
+              <div className="flex justify-between items-center mb-1.5">
+                <label className="text-sm font-semibold text-slate-300">
+                  Total a Cobrar ($)
+                </label>
+                <span className="text-xs text-slate-400">
+                  Sugerido: $
+                  {(Number(cartItem?.variant?.precio ?? 0) * cartQty).toFixed(2)}
+                </span>
+              </div>
               <input
                 type="number"
                 step="0.01"
+                min="0.01"
+                placeholder="0.00"
                 value={manualTotalInput}
                 onChange={(e) => setManualTotalInput(e.target.value)}
-                className="w-full h-14 bg-slate-950 border border-emerald-500/50 rounded-xl px-4 text-2xl font-extrabold text-emerald-400 text-center"
+                className={`w-full h-14 bg-slate-950 border rounded-xl px-4 text-2xl font-extrabold text-center outline-none ${
+                  isSaleTotalValid
+                    ? 'border-emerald-500/50 text-emerald-400'
+                    : 'border-rose-500 text-rose-400'
+                }`}
               />
+              {!isSaleTotalValid && (
+                <span className="text-xs text-rose-400 font-semibold block mt-1.5 text-center">
+                  Ingresa un monto válido mayor a $0.00 para habilitar el cobro.
+                </span>
+              )}
             </div>
 
             <div className="flex flex-col gap-2.5 pt-2">
               <button
                 type="button"
-                disabled={isProcessingSale}
+                disabled={isProcessingSale ? true : !isSaleTotalValid}
                 onClick={handleConfirmSale}
-                className="w-full h-14 bg-emerald-600 hover:bg-emerald-500 active:scale-[0.99] text-white rounded-xl text-lg font-extrabold shadow-lg shadow-emerald-600/30"
+                className={`w-full h-14 rounded-xl text-lg font-extrabold transition-all ${
+                  isSaleTotalValid && !isProcessingSale
+                    ? 'bg-emerald-600 hover:bg-emerald-500 active:scale-[0.99] text-white shadow-lg shadow-emerald-600/30'
+                    : 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-60'
+                }`}
               >
                 {isProcessingSale ? 'Procesando...' : 'Cobrar y Descontar Stock'}
               </button>
@@ -1172,7 +1334,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* VARIANTES DE LA PRENDA */}
               <div className="mt-2 border-t border-slate-800 pt-4 flex flex-col gap-3">
                 <span className="text-base font-bold text-white">Variantes, Colores y Stock</span>
 
@@ -1278,7 +1439,6 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* CONTROL DELIBERADO DE STOCK */}
                       <div className="pt-1">
                         <label className="text-xs font-semibold text-slate-400 block mb-1.5">
                           Stock disponible (Unidades)
@@ -1331,7 +1491,6 @@ export default function App() {
                   ))}
                 </div>
 
-                {/* BOTÓN PARA AÑADIR NUEVA VARIANTE / COLOR SIN DUPLICAR PRENDA */}
                 <button
                   type="button"
                   onClick={() => {
@@ -1595,7 +1754,7 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* BARRA DE NAVEGACIÓN INFERIOR (TAMAÑO TÁCTIL AMPLIO)       */}
+      {/* BARRA DE NAVEGACIÓN INFERIOR                              */}
       {/* ========================================================= */}
       <nav className="fixed bottom-0 left-0 right-0 z-30 bg-slate-900/95 backdrop-blur-md border-t border-slate-800">
         <div className="max-w-md mx-auto grid grid-cols-3 gap-1 p-2">
