@@ -166,6 +166,58 @@ const getColorSwatchStyle = (rawColor) => {
 };
 
 export default function App() {
+  // Mapa visual de colores en español a estilos Hex/CSS
+  const getColorSwatchStyle = (rawColor) => {
+    const limpio = String(rawColor ?? '')
+      .toLowerCase()
+      .trim()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+
+    if (limpio.includes('rojo') ? true : limpio.includes('vino') ? true : limpio.includes('bordo')) {
+      return { backgroundColor: '#ef4444', borderColor: '#fca5a5' };
+    }
+    if (limpio.includes('negro')) {
+      return { backgroundColor: '#1f2937', borderColor: '#94a3b8' };
+    }
+    if (limpio.includes('beige') ? true : limpio.includes('crema') ? true : limpio.includes('nude')) {
+      return { backgroundColor: '#e5d3b3', borderColor: '#cbb282' };
+    }
+    if (limpio.includes('blanco') ? true : limpio.includes('hueso')) {
+      return { backgroundColor: '#ffffff', borderColor: '#94a3b8' };
+    }
+    if (limpio.includes('azul') ? true : limpio.includes('celeste') ? true : limpio.includes('marino')) {
+      return { backgroundColor: '#3b82f6', borderColor: '#93c5fd' };
+    }
+    if (limpio.includes('rosa') ? true : limpio.includes('rosado') ? true : limpio.includes('fucsia')) {
+      return { backgroundColor: '#ec4899', borderColor: '#f9a8d4' };
+    }
+    if (limpio.includes('verde') ? true : limpio.includes('oliva') ? true : limpio.includes('menta')) {
+      return { backgroundColor: '#22c55e', borderColor: '#86efac' };
+    }
+    if (limpio.includes('amarillo') ? true : limpio.includes('mostaza') ? true : limpio.includes('dorado')) {
+      return { backgroundColor: '#eab308', borderColor: '#fde047' };
+    }
+    if (
+      limpio.includes('cafe')
+        ? true
+        : limpio.includes('marron')
+        ? true
+        : limpio.includes('camel')
+        ? true
+        : limpio.includes('chocolate')
+    ) {
+      return { backgroundColor: '#78350f', borderColor: '#d97706' };
+    }
+    if (limpio.includes('morado') ? true : limpio.includes('lila') ? true : limpio.includes('violeta')) {
+      return { backgroundColor: '#a855f7', borderColor: '#d8b4fe' };
+    }
+    if (limpio.includes('gris') ? true : limpio.includes('plata')) {
+      return { backgroundColor: '#6b7280', borderColor: '#cbd5e1' };
+    }
+    return { backgroundColor: '#64748b', borderColor: '#94a3b8' };
+  };
+
   const [activeTab, setActiveTab] = useState('vender');
   const [user, setUser] = useState(null);
   const [isFirebaseConnected, setIsFirebaseConnected] = useState(false);
@@ -173,16 +225,27 @@ export default function App() {
   const [products, setProducts] = useState([]);
   const [sales, setSales] = useState([]);
 
-  // Estado POS (Vender)
+  // =========================================================
+  // ESTADOS DEL PUNTO DE VENTA Y CARRITO MULTI-PRODUCTO
+  // =========================================================
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCatFilter, setSelectedCatFilter] = useState('Todas');
-  const [cartItem, setCartItem] = useState(null);
-  const [cartQty, setCartQty] = useState(1);
-  const [paymentMethod, setPaymentMethod] = useState('Efectivo');
+  const [cart, setCart] = useState([]);
+  const [isCartOpen, setIsCartOpen] = useState(false);
+  const [discountInput, setDiscountInput] = useState('');
   const [manualTotalInput, setManualTotalInput] = useState('');
+  const [isTotalOverridden, setIsTotalOverridden] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState('Efectivo');
   const [isProcessingSale, setIsProcessingSale] = useState(false);
   const [saleSuccessMessage, setSaleSuccessMessage] = useState(null);
   const [annulLoadingId, setAnnulLoadingId] = useState(null);
+
+  // =========================================================
+  // ESTADOS DE FILTROS DE FECHAS EN MÉTRICAS
+  // =========================================================
+  const [dateRangeFilter, setDateRangeFilter] = useState('hoy'); // 'hoy', 'semana', 'mes', 'todo', 'personalizado'
+  const [customDateFrom, setCustomDateFrom] = useState('');
+  const [customDateTo, setCustomDateTo] = useState('');
 
   // Modal Nuevo Producto
   const [showAddProductModal, setShowAddProductModal] = useState(false);
@@ -234,7 +297,7 @@ export default function App() {
       (error) => console.warn('Firestore products:', error?.message)
     );
 
-    const qSales = query(collection(db, 'sales'), orderBy('timestamp', 'desc'), limit(60));
+    const qSales = query(collection(db, 'sales'), orderBy('timestamp', 'desc'), limit(400));
     const unsubSales = onSnapshot(
       qSales,
       (snapshot) => {
@@ -262,7 +325,7 @@ export default function App() {
     return Array.from(cats);
   }, [products]);
 
-  // Filtrado de productos por buscador (nombre, color o talla) y categoría
+  // Filtrado de productos en Vender
   const filteredProducts = useMemo(() => {
     const term = searchTerm.toLowerCase().trim();
     return products.filter((p) => {
@@ -306,167 +369,300 @@ export default function App() {
     }, 0);
   }, [products]);
 
-  // CÁLCULO EXACTO DE MÉTRICAS Y GANANCIA NETA (Solo ventas activas)
-  const activeSales = useMemo(() => {
-    return sales.filter((s) => Boolean(s) && !s?.anulada);
-  }, [sales]);
+  // =========================================================
+  // LÓGICA DEL CARRITO MULTI-PRODUCTO
+  // =========================================================
+  const getLiveStock = (productId, variantId, fallbackStock) => {
+    const prod = products.find((p) => p?.id === productId);
+    if (!prod) return Number(fallbackStock ?? 0);
+    const vars = Array.isArray(prod?.variantes) ? prod.variantes : [];
+    const foundVar = vars.find((v) => v?.id === variantId);
+    return foundVar ? Math.max(0, Number(foundVar?.stock ?? 0)) : Number(fallbackStock ?? 0);
+  };
 
-  const metrics = useMemo(() => {
-    let totalIngresos = 0;
-    let gananciaNeta = 0;
-    let porEfectivo = 0;
-    let porQR = 0;
-    let porTarjeta = 0;
+  const cartTotalItems = useMemo(() => {
+    return cart.reduce((acc, item) => acc + Number(item?.cantidad ?? 0), 0);
+  }, [cart]);
 
-    activeSales.forEach((s) => {
-      const cantidad = Math.max(1, Number(s?.cantidad ?? 1));
-      const totalCobrado = Math.max(0, Number(s?.total ?? 0));
-      const costoUnitario = Math.max(0, Number(s?.costoUnitario ?? 0));
-      const costoTotal = costoUnitario * cantidad;
+  const cartSubtotal = useMemo(() => {
+    return cart.reduce(
+      (acc, item) => acc + Number(item?.precioUnitario ?? 0) * Number(item?.cantidad ?? 0),
+      0
+    );
+  }, [cart]);
 
-      totalIngresos += totalCobrado;
-      gananciaNeta += totalCobrado - costoTotal;
+  const parsedDiscount = useMemo(() => {
+    const val = parseFloat(String(discountInput ?? '').trim());
+    return Number.isNaN(val) ? 0 : Math.max(0, val);
+  }, [discountInput]);
 
-      if (s?.metodoPago === 'Efectivo') porEfectivo += totalCobrado;
-      else if (s?.metodoPago === 'QR') porQR += totalCobrado;
-      else porTarjeta += totalCobrado;
-    });
-
-    if (activeSales.length === 0) {
-      return {
-        totalIngresos: 0,
-        gananciaNeta: 0,
-        porEfectivo: 0,
-        porQR: 0,
-        porTarjeta: 0,
-      };
+  // Sincronizar el Total a Cobrar cuando cambia el subtotal o el descuento
+  useEffect(() => {
+    if (!isTotalOverridden) {
+      const calculado = Math.max(0, cartSubtotal - parsedDiscount);
+      setManualTotalInput(calculado > 0 ? calculado.toFixed(2) : cart.length > 0 ? '0.00' : '');
     }
+  }, [cartSubtotal, parsedDiscount, isTotalOverridden, cart.length]);
 
-    return { totalIngresos, gananciaNeta, porEfectivo, porQR, porTarjeta };
-  }, [activeSales]);
-
-  // Validación estricta del monto a cobrar (mayor a 0 y numérico)
-  const parsedSaleTotal = useMemo(() => {
-    const textoLimpio = String(manualTotalInput ?? '').trim();
-    if (!textoLimpio) return NaN;
-    return parseFloat(textoLimpio);
+  const finalTotalToCharge = useMemo(() => {
+    const texto = String(manualTotalInput ?? '').trim();
+    if (!texto) return NaN;
+    return parseFloat(texto);
   }, [manualTotalInput]);
 
-  const isSaleTotalValid = useMemo(() => {
-    return !Number.isNaN(parsedSaleTotal) && parsedSaleTotal > 0;
-  }, [parsedSaleTotal]);
+  const isCartTotalValid = useMemo(() => {
+    return cart.length > 0 && !Number.isNaN(finalTotalToCharge) && finalTotalToCharge > 0;
+  }, [cart.length, finalTotalToCharge]);
 
-  // 1. Seleccionar una variante para vender (Inicialización obligatoria de precioVenta * cantidad)
-  const handleSelectVariantForSale = (product, variant) => {
-    if (Number(variant?.stock ?? 0) <= 0) {
+  // Añadir variante al carrito desde el catálogo
+  const handleAddToCart = (product, variant) => {
+    const stockDisp = Math.max(0, Number(variant?.stock ?? 0));
+    if (stockDisp <= 0) {
       alert('Esta variante no tiene stock disponible.');
       return;
     }
-    const cantidadInicial = 1;
-    const precioVenta = Math.max(0, Number(variant?.precio ?? 0));
-    const totalInicial = precioVenta * cantidadInicial;
 
-    setCartItem({ product, variant });
-    setCartQty(cantidadInicial);
-    setPaymentMethod('Efectivo');
-    setManualTotalInput(totalInicial > 0 ? totalInicial.toFixed(2) : '');
+    const existingIdx = cart.findIndex(
+      (item) => item.productId === product.id && item.variantId === variant.id
+    );
+    const cantidadActualEnCarrito = existingIdx > -1 ? Number(cart[existingIdx].cantidad ?? 0) : 0;
+
+    if (cantidadActualEnCarrito + 1 > stockDisp) {
+      alert(
+        `Stock máximo alcanzado. Solo hay ${stockDisp} un. disponibles de ${product.nombre} (${variant.color}) y ya tienes ${cantidadActualEnCarrito} en el carrito.`
+      );
+      return;
+    }
+
+    setIsTotalOverridden(false);
+
+    if (existingIdx > -1) {
+      setCart((prev) =>
+        prev.map((item, i) =>
+          i === existingIdx
+            ? { ...item, cantidad: item.cantidad + 1, stockMax: stockDisp }
+            : item
+        )
+      );
+    } else {
+      setCart((prev) => [
+        ...prev,
+        {
+          productId: product.id,
+          productoNombre: product.nombre ?? 'Prenda',
+          variantId: variant.id,
+          color: variant.color ?? 'General',
+          talla: variant.talla ?? 'Única',
+          precioUnitario: Math.max(0, Number(variant.precio ?? 0)),
+          costoUnitario: Math.max(0, Number(variant.costo ?? 0)),
+          cantidad: 1,
+          stockMax: stockDisp,
+        },
+      ]);
+    }
   };
 
-  // Cambiar cantidad en el carrito actualizando automáticamente (precioVenta * cantidad)
-  const handleQtyChange = (delta) => {
-    if (!cartItem) return;
-    const maxStock = Math.max(1, Number(cartItem?.variant?.stock ?? 1));
-    const nextQty = Math.max(1, Math.min(maxStock, cartQty + delta));
-    const precioVenta = Math.max(0, Number(cartItem?.variant?.precio ?? 0));
-    const nuevoSubtotal = precioVenta * nextQty;
+  // Modificar cantidad de un ítem dentro del carrito (+ / -)
+  const handleUpdateCartQty = (productId, variantId, delta) => {
+    setIsTotalOverridden(false);
+    setCart((prev) => {
+      const updated = [];
+      for (const item of prev) {
+        if (item.productId === productId && item.variantId === variantId) {
+          const maxStock = getLiveStock(productId, variantId, item.stockMax);
+          const nuevaCant = item.cantidad + delta;
 
-    setCartQty(nextQty);
-    setManualTotalInput(nuevoSubtotal > 0 ? nuevoSubtotal.toFixed(2) : '');
+          if (delta > 0 && nuevaCant > maxStock) {
+            alert(`No puedes agregar más. Solo existen ${maxStock} unidades en stock.`);
+            updated.push({ ...item, stockMax: maxStock });
+          } else if (nuevaCant > 0) {
+            updated.push({ ...item, cantidad: nuevaCant, stockMax: maxStock });
+          }
+          // Si nuevaCant <= 0, no se agrega a updated (se elimina del carrito)
+        } else {
+          updated.push(item);
+        }
+      }
+      if (updated.length === 0) {
+        setIsCartOpen(false);
+      }
+      return updated;
+    });
   };
 
-  // 2. Confirmar y registrar venta (Bloqueando ventas en $0.00 o NaN)
-  const handleConfirmSale = async () => {
-    if (!cartItem ? true : isProcessingSale) return;
+  // Eliminar un ítem del carrito directamente
+  const handleRemoveCartItem = (productId, variantId) => {
+    setIsTotalOverridden(false);
+    setCart((prev) => {
+      const next = prev.filter(
+        (item) => !(item.productId === productId && item.variantId === variantId)
+      );
+      if (next.length === 0) {
+        setIsCartOpen(false);
+      }
+      return next;
+    });
+  };
 
-    if (!isSaleTotalValid) {
+  // Confirmar y cobrar todo el carrito en una sola transacción
+  const handleConfirmCartSale = async () => {
+    if (cart.length === 0 ? true : isProcessingSale) return;
+    if (!isCartTotalValid) {
       alert('El total a cobrar debe ser mayor a $0.00 para registrar la venta.');
       return;
     }
 
-    const { product, variant } = cartItem;
-    const qty = Math.max(1, Number(cartQty ?? 1));
-    const totalCobrado = Number(parsedSaleTotal.toFixed(2));
-    const precioUnit = Math.max(0, Number(variant?.precio ?? 0));
-    const costoUnit = Math.max(0, Number(variant?.costo ?? 0));
+    const totalCobrado = Number(finalTotalToCharge.toFixed(2));
+    const subtotalVenta = Number(cartSubtotal.toFixed(2));
+    const descuentoAplicado = Math.max(0, Number((subtotalVenta - totalCobrado).toFixed(2)));
+    const costoTotalAcumulado = Number(
+      cart
+        .reduce((acc, item) => acc + Number(item.costoUnitario ?? 0) * Number(item.cantidad ?? 1), 0)
+        .toFixed(2)
+    );
+    const gananciaNetaVenta = Number((totalCobrado - costoTotalAcumulado).toFixed(2));
+
+    const itemsVendidos = cart.map((item) => ({
+      productId: item.productId,
+      variantId: item.variantId,
+      productoNombre: item.productoNombre,
+      color: item.color,
+      talla: item.talla,
+      cantidad: Number(item.cantidad),
+      precioUnitario: Number(item.precioUnitario),
+      costoUnitario: Number(item.costoUnitario),
+      subtotalItem: Number((item.precioUnitario * item.cantidad).toFixed(2)),
+    }));
+
+    const ahora = new Date();
+    const fechaFormateada =
+      ahora.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' }) +
+      ' ' +
+      ahora.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
     setIsProcessingSale(true);
     try {
-      const prodId = product?.id ? String(product.id) : '';
-
-      if (user && isFirebaseConnected && prodId && !prodId.startsWith('local-')) {
+      if (user && isFirebaseConnected) {
         await runTransaction(db, async (transaction) => {
-          const prodRef = doc(db, 'products', prodId);
-          const prodSnap = await transaction.get(prodRef);
-          if (!prodSnap.exists()) throw new Error('El producto ya no existe en el inventario.');
-
-          const data = prodSnap.data();
-          const listaVariantes = Array.isArray(data?.variantes) ? data.variantes : [];
-
-          const variantesActualizadas = listaVariantes.map((v) => {
-            const mismoId = Boolean(v?.id && variant?.id && v.id === variant.id);
-            const mismoColorTalla =
-              !mismoId &&
-              String(v?.color ?? '') === String(variant?.color ?? '') &&
-              String(v?.talla ?? '') === String(variant?.talla ?? '');
-
-            if (mismoId ? true : mismoColorTalla) {
-              const stockDisp = Number(v?.stock ?? 0);
-              if (stockDisp < qty) {
-                throw new Error(`Stock insuficiente. Solo quedan ${stockDisp} unidades.`);
-              }
-              return { ...v, stock: stockDisp - qty };
+          // Agrupar por productId para leer y actualizar cada producto una sola vez en la transacción
+          const mapaPorProducto = new Map();
+          for (const item of itemsVendidos) {
+            const pid = String(item.productId ?? '').trim();
+            if (!pid ? true : pid.startsWith('local-')) continue;
+            if (!mapaPorProducto.has(pid)) {
+              mapaPorProducto.set(pid, []);
             }
-            return v;
-          });
+            mapaPorProducto.get(pid).push(item);
+          }
 
-          transaction.update(prodRef, { variantes: variantesActualizadas });
+          // 1. Fase de Lectura y Validación estricta de stock
+          const actualizacionesPendientes = [];
+          for (const [pid, itemsDelProd] of mapaPorProducto.entries()) {
+            const prodRef = doc(db, 'products', pid);
+            const prodSnap = await transaction.get(prodRef);
+            if (!prodSnap.exists()) {
+              throw new Error(`El producto "${itemsDelProd[0]?.productoNombre}" ya no existe.`);
+            }
 
+            const data = prodSnap.data();
+            const listaVariantes = Array.isArray(data?.variantes) ? [...data.variantes] : [];
+
+            for (const itemPedido of itemsDelProd) {
+              const idxVar = listaVariantes.findIndex((v) => {
+                if (!v) return false;
+                if (v?.id && itemPedido?.variantId && String(v.id) === String(itemPedido.variantId)) {
+                  return true;
+                }
+                return (
+                  String(v?.color ?? '').toLowerCase() === String(itemPedido.color ?? '').toLowerCase() &&
+                  String(v?.talla ?? '').toLowerCase() === String(itemPedido.talla ?? '').toLowerCase()
+                );
+              });
+
+              if (idxVar === -1) {
+                throw new Error(
+                  `No se encontró la variante ${itemPedido.color} (${itemPedido.talla}) de ${itemPedido.productoNombre}.`
+                );
+              }
+
+              const stockActual = Number(listaVariantes[idxVar]?.stock ?? 0);
+              if (stockActual < itemPedido.cantidad) {
+                throw new Error(
+                  `Stock insuficiente para ${itemPedido.productoNombre} (${itemPedido.color}). Disponible: ${stockActual} un.`
+                );
+              }
+
+              listaVariantes[idxVar] = {
+                ...listaVariantes[idxVar],
+                stock: stockActual - itemPedido.cantidad,
+              };
+            }
+
+            actualizacionesPendientes.push({ prodRef, listaVariantes });
+          }
+
+          // 2. Fase de Escritura: descontar stock de todos los productos
+          for (const act of actualizacionesPendientes) {
+            transaction.update(act.prodRef, { variantes: act.listaVariantes });
+          }
+
+          // 3. Registrar la venta única agrupada
           const nuevaVentaRef = doc(collection(db, 'sales'));
           transaction.set(nuevaVentaRef, {
-            productId: prodId,
-            variantId: variant?.id ?? '',
-            productoNombre: product?.nombre ?? 'Prenda',
-            talla: variant?.talla ?? 'Única',
-            color: variant?.color ?? 'General',
-            cantidad: qty,
-            precioUnitario: precioUnit,
-            costoUnitario: costoUnit,
+            esVentaAgrupada: true,
+            items: itemsVendidos,
+            productId: itemsVendidos[0]?.productId ?? '',
+            variantId: itemsVendidos[0]?.variantId ?? '',
+            productoNombre:
+              itemsVendidos.length === 1
+                ? itemsVendidos[0].productoNombre
+                : `Ticket (${itemsVendidos.length} prendas)`,
+            color: itemsVendidos.length === 1 ? itemsVendidos[0].color : 'Varios',
+            talla: itemsVendidos.length === 1 ? itemsVendidos[0].talla : 'Varias',
+            cantidad: cartTotalItems,
+            precioUnitario: itemsVendidos[0]?.precioUnitario ?? 0,
+            costoUnitario: itemsVendidos[0]?.costoUnitario ?? 0,
+            subtotal: subtotalVenta,
+            descuento: descuentoAplicado,
             total: totalCobrado,
+            costoTotal: costoTotalAcumulado,
+            gananciaNeta: gananciaNetaVenta,
             metodoPago: paymentMethod,
             timestamp: serverTimestamp(),
-            fechaLocal: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            fechaIso: ahora.toISOString(),
+            fechaLocal: fechaFormateada,
           });
         });
       } else {
+        // Modo local de respaldo
         setProducts((prev) =>
           prev.map((p) => {
-            if (p?.id !== product?.id) return p;
-            const vars = Array.isArray(p?.variantes) ? p.variantes : [];
+            const itemsDeEsteProd = itemsVendidos.filter((i) => i.productId === p.id);
+            if (itemsDeEsteProd.length === 0) return p;
+            const vars = Array.isArray(p.variantes) ? p.variantes : [];
             return {
               ...p,
-              variantes: vars.map((v) =>
-                v?.id === variant?.id ? { ...v, stock: Math.max(0, Number(v?.stock ?? 0) - qty) } : v
-              ),
+              variantes: vars.map((v) => {
+                const matchItem = itemsDeEsteProd.find((i) => i.variantId === v.id);
+                if (!matchItem) return v;
+                return { ...v, stock: Math.max(0, Number(v.stock ?? 0) - matchItem.cantidad) };
+              }),
             };
           })
         );
       }
 
       setSaleSuccessMessage(
-        `Venta registrada: ${qty}x ${product?.nombre ?? ''} (${variant?.color ?? ''}) por $${totalCobrado.toFixed(2)}`
+        `Venta cobrada (${paymentMethod}): ${cartTotalItems} art. por $${totalCobrado.toFixed(2)}`
       );
       setTimeout(() => setSaleSuccessMessage(null), 4000);
-      setCartItem(null);
+
+      // Limpiar carrito
+      setCart([]);
+      setDiscountInput('');
+      setManualTotalInput('');
+      setIsTotalOverridden(false);
+      setIsCartOpen(false);
     } catch (err) {
       alert('No se pudo completar la venta: ' + (err?.message ?? 'Error desconocido'));
     } finally {
@@ -474,93 +670,107 @@ export default function App() {
     }
   };
 
-  // 3. ANULAR VENTA CON VALIDACIÓN SEGURA Y MODO "ELIMINACIÓN FORZADA / LIMPIEZA"
+  // =========================================================
+  // ANULACIÓN SEGURA DE VENTA (SOPORTA MULTI-PRODUCTO Y ANTIGUAS)
+  // =========================================================
   const handleAnnulSale = async (sale) => {
     if (!sale) return;
 
     const saleId = sale?.id ? String(sale.id).trim() : '';
-    const nombrePrenda = sale?.productoNombre ?? sale?.nombre ?? 'Prenda';
-    const colorPrenda = sale?.color ?? '';
-    const cantidadDevuelta = Math.max(1, Number(sale?.cantidad ?? 1));
+    const listaItemsVenta =
+      Array.isArray(sale?.items) && sale.items.length > 0
+        ? sale.items
+        : [
+            {
+              productId: sale?.productId ?? sale?.prodId ?? '',
+              variantId: sale?.variantId ?? '',
+              productoNombre: sale?.productoNombre ?? sale?.nombre ?? 'Prenda',
+              color: sale?.color ?? '',
+              talla: sale?.talla ?? '',
+              cantidad: Math.max(1, Number(sale?.cantidad ?? 1)),
+            },
+          ];
 
     setAnnulLoadingId(saleId ? saleId : 'temp-id');
 
     try {
-      // Buscar el producto de forma defensiva en el estado actual
-      const rawProdId = sale?.productId ?? sale?.prodId ?? '';
-      const validProdId = typeof rawProdId === 'string' ? rawProdId.trim() : '';
+      // Agrupar qué variantes se pueden restaurar en el inventario actual
+      const restauracionesPorProdId = new Map();
+      let algunItemEncontrado = false;
 
-      const productoEnInventario = products.find((p) => {
-        if (!p) return false;
-        if (validProdId && p?.id && String(p.id) === validProdId) return true;
-        const nombreProd = String(p?.nombre ?? '').trim().toLowerCase();
-        const nombreVenta = String(nombrePrenda).trim().toLowerCase();
-        return Boolean(nombreProd && nombreVenta && nombreProd === nombreVenta);
-      });
+      for (const item of listaItemsVenta) {
+        const rawPid = item?.productId ? String(item.productId).trim() : '';
+        const nombreBuscado = String(item?.productoNombre ?? '').trim().toLowerCase();
 
-      const variantes = Array.isArray(productoEnInventario?.variantes)
-        ? productoEnInventario.variantes
-        : [];
+        const prodEncontrado = products.find((p) => {
+          if (!p) return false;
+          if (rawPid && p?.id && String(p.id) === rawPid) return true;
+          const nomP = String(p?.nombre ?? '').trim().toLowerCase();
+          return Boolean(nomP && nombreBuscado && nomP === nombreBuscado);
+        });
 
-      // Buscar la variante de forma defensiva (.findIndex con validación segura)
-      const variantIndex = variantes.findIndex((v) => {
-        if (!v) return false;
-        const tieneId = Boolean(v?.id && sale?.variantId);
-        if (tieneId && String(v.id) === String(sale.variantId)) {
-          return true;
+        if (!prodEncontrado) continue;
+
+        const pidReal = String(prodEncontrado.id);
+        const variantesActuales = restauracionesPorProdId.has(pidReal)
+          ? restauracionesPorProdId.get(pidReal)
+          : Array.isArray(prodEncontrado?.variantes)
+          ? [...prodEncontrado.variantes]
+          : [];
+
+        const idxVar = variantesActuales.findIndex((v) => {
+          if (!v) return false;
+          if (v?.id && item?.variantId && String(v.id) === String(item.variantId)) return true;
+          const cV = String(v?.color ?? '').trim().toLowerCase();
+          const cI = String(item?.color ?? '').trim().toLowerCase();
+          const tV = String(v?.talla ?? '').trim().toLowerCase();
+          const tI = String(item?.talla ?? '').trim().toLowerCase();
+          if (cV && cI && cV === cI) {
+            return tI ? tV === tI : true;
+          }
+          return false;
+        });
+
+        if (idxVar !== -1) {
+          algunItemEncontrado = true;
+          const cantDevolver = Math.max(1, Number(item?.cantidad ?? 1));
+          variantesActuales[idxVar] = {
+            ...variantesActuales[idxVar],
+            stock: Math.max(0, Number(variantesActuales[idxVar]?.stock ?? 0)) + cantDevolver,
+          };
+          restauracionesPorProdId.set(pidReal, variantesActuales);
         }
-        const colorV = String(v?.color ?? '').trim().toLowerCase();
-        const colorS = String(sale?.color ?? '').trim().toLowerCase();
-        const tallaV = String(v?.talla ?? '').trim().toLowerCase();
-        const tallaS = String(sale?.talla ?? '').trim().toLowerCase();
+      }
 
-        if (colorV && colorS && colorV === colorS) {
-          return tallaS ? tallaV === tallaS : true;
-        }
-        return false;
-      });
-
-      const existeProductoYVariante = Boolean(productoEnInventario && variantIndex !== -1);
-
-      // CASO A: El producto y la variante existen -> Restaurar stock y borrar la venta
-      if (existeProductoYVariante) {
+      if (algunItemEncontrado) {
         const confirmar = window.confirm(
-          `¿Anular venta de "${nombrePrenda} (${colorPrenda})" y devolver ${cantidadDevuelta} un. al inventario?`
+          `¿Anular este ticket por $${Number(sale?.total ?? 0).toFixed(2)} y devolver las prendas al inventario?`
         );
         if (!confirmar) {
           setAnnulLoadingId(null);
           return;
         }
 
-        const nuevasVariantes = variantes.map((v, idx) => {
-          if (idx === variantIndex) {
-            return {
-              ...v,
-              stock: Math.max(0, Number(v?.stock ?? 0)) + cantidadDevuelta,
-            };
+        if (user && isFirebaseConnected) {
+          for (const [pidReal, nuevasVars] of restauracionesPorProdId.entries()) {
+            if (!pidReal.startsWith('local-')) {
+              await updateDoc(doc(db, 'products', pidReal), { variantes: nuevasVars });
+            }
           }
-          return v;
-        });
-
-        const targetProdId = String(productoEnInventario.id ?? '').trim();
-
-        if (user && isFirebaseConnected && targetProdId && !targetProdId.startsWith('local-')) {
-          const prodRef = doc(db, 'products', targetProdId);
-          await updateDoc(prodRef, { variantes: nuevasVariantes });
+          if (saleId && !saleId.startsWith('local-')) {
+            await deleteDoc(doc(db, 'sales', saleId));
+          }
         }
 
-        if (user && isFirebaseConnected && saleId && !saleId.startsWith('local-')) {
-          const saleRef = doc(db, 'sales', saleId);
-          await deleteDoc(saleRef);
-        }
-
-        // Actualizar estado en pantalla inmediatamente
         setProducts((prev) =>
-          prev.map((p) => (p?.id === productoEnInventario.id ? { ...p, variantes: nuevasVariantes } : p))
+          prev.map((p) =>
+            restauracionesPorProdId.has(String(p?.id))
+              ? { ...p, variantes: restauracionesPorProdId.get(String(p.id)) }
+              : p
+          )
         );
-        setSales((prev) => prev.filter((item) => item?.id !== sale?.id));
+        setSales((prev) => prev.filter((s) => s?.id !== sale?.id));
       } else {
-        // CASO B: Modo "Eliminación forzada / Limpieza" si el producto o variante ya no existe
         const confirmarLimpieza = window.confirm(
           'No se encontró el producto en inventario. ¿Deseas eliminar el registro de venta de todas formas?'
         );
@@ -570,25 +780,210 @@ export default function App() {
         }
 
         if (user && isFirebaseConnected && saleId && !saleId.startsWith('local-')) {
-          const saleRef = doc(db, 'sales', saleId);
-          await deleteDoc(saleRef);
+          await deleteDoc(doc(db, 'sales', saleId));
         }
-
-        // Limpiar inmediatamente del estado local para que el arqueo y ganancia neta se corrijan al instante
-        setSales((prev) => prev.filter((item) => item?.id !== sale?.id));
+        setSales((prev) => prev.filter((s) => s?.id !== sale?.id));
       }
     } catch (err) {
-      console.error('Error controlado al anular venta:', err);
-      alert(
-        'No se pudo completar la operación automáticamente. Detalle: ' +
-          (err?.message ?? 'Error de conexión')
-      );
+      console.error('Error al anular venta:', err);
+      alert('No se pudo completar la anulación: ' + (err?.message ?? 'Error de conexión'));
     } finally {
       setAnnulLoadingId(null);
     }
   };
 
-  // Guardar nueva prenda en Firestore
+  // =========================================================
+  // FILTRO DE FECHAS Y RANKING TOP 5 EN MÉTRICAS
+  // =========================================================
+  const extractSaleDate = (sale) => {
+    if (sale?.timestamp && typeof sale.timestamp.toDate === 'function') {
+      return sale.timestamp.toDate();
+    }
+    if (sale?.timestamp?.seconds) {
+      return new Date(sale.timestamp.seconds * 1000);
+    }
+    if (sale?.fechaIso) {
+      const parsed = new Date(sale.fechaIso);
+      if (!Number.isNaN(parsed.getTime())) return parsed;
+    }
+    return new Date();
+  };
+
+  const activeSales = useMemo(() => {
+    return sales.filter((s) => Boolean(s) && !s?.anulada);
+  }, [sales]);
+
+  const filteredSales = useMemo(() => {
+    if (dateRangeFilter === 'todo') return activeSales;
+
+    const ahora = new Date();
+    const inicioHoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate(), 0, 0, 0, 0);
+    const finHoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate(), 23, 59, 59, 999);
+
+    return activeSales.filter((s) => {
+      const fechaVenta = extractSaleDate(s);
+      const ms = fechaVenta.getTime();
+
+      if (dateRangeFilter === 'hoy') {
+        return ms >= inicioHoy.getTime() && ms <= finHoy.getTime();
+      }
+
+      if (dateRangeFilter === 'semana') {
+        const diaSemana = ahora.getDay(); // 0 domingo, 1 lunes...
+        const diasDesdeLunes = diaSemana === 0 ? 6 : diaSemana - 1;
+        const inicioSemana = new Date(
+          ahora.getFullYear(),
+          ahora.getMonth(),
+          ahora.getDate() - diasDesdeLunes,
+          0,
+          0,
+          0,
+          0
+        );
+        return ms >= inicioSemana.getTime() && ms <= finHoy.getTime();
+      }
+
+      if (dateRangeFilter === 'mes') {
+        const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1, 0, 0, 0, 0);
+        return ms >= inicioMes.getTime() && ms <= finHoy.getTime();
+      }
+
+      if (dateRangeFilter === 'personalizado') {
+        let cumpleDesde = true;
+        let cumpleHasta = true;
+
+        if (customDateFrom) {
+          const [y, m, d] = customDateFrom.split('-').map(Number);
+          const desdeDate = new Date(y, m - 1, d, 0, 0, 0, 0);
+          cumpleDesde = ms >= desdeDate.getTime();
+        }
+        if (customDateTo) {
+          const [y, m, d] = customDateTo.split('-').map(Number);
+          const hastaDate = new Date(y, m - 1, d, 23, 59, 59, 999);
+          cumpleHasta = ms <= hastaDate.getTime();
+        }
+        return cumpleDesde && cumpleHasta;
+      }
+
+      return true;
+    });
+  }, [activeSales, dateRangeFilter, customDateFrom, customDateTo]);
+
+  // Totales dinámicos según el filtro de fecha seleccionado
+  const metrics = useMemo(() => {
+    let totalIngresos = 0;
+    let gananciaNeta = 0;
+    let porEfectivo = 0;
+    let porQR = 0;
+
+    filteredSales.forEach((s) => {
+      const totalCobrado = Math.max(0, Number(s?.total ?? 0));
+      let costoVenta = 0;
+
+      if (s?.costoTotal !== undefined) {
+        costoVenta = Math.max(0, Number(s.costoTotal));
+      } else if (Array.isArray(s?.items) && s.items.length > 0) {
+        costoVenta = s.items.reduce(
+          (acc, i) => acc + Math.max(0, Number(i?.costoUnitario ?? 0)) * Math.max(1, Number(i?.cantidad ?? 1)),
+          0
+        );
+      } else {
+        const cant = Math.max(1, Number(s?.cantidad ?? 1));
+        const costoUnit = Math.max(0, Number(s?.costoUnitario ?? 0));
+        costoVenta = costoUnit * cant;
+      }
+
+      totalIngresos += totalCobrado;
+      gananciaNeta += totalCobrado - costoVenta;
+
+      const metodo = String(s?.metodoPago ?? 'Efectivo').toLowerCase();
+      if (metodo.includes('efectivo')) {
+        porEfectivo += totalCobrado;
+      } else {
+        porQR += totalCobrado;
+      }
+    });
+
+    return { totalIngresos, gananciaNeta, porEfectivo, porQR };
+  }, [filteredSales]);
+
+  // Top 5 Prendas Más Vendidas en el período seleccionado
+  const topSellingProducts = useMemo(() => {
+    const prodMap = new Map();
+
+    filteredSales.forEach((s) => {
+      const itemsList =
+        Array.isArray(s?.items) && s.items.length > 0
+          ? s.items
+          : [
+              {
+                productId: s?.productId ?? '',
+                productoNombre: s?.productoNombre ?? 'Prenda',
+                color: s?.color ?? 'General',
+                talla: s?.talla ?? 'Única',
+                cantidad: Math.max(1, Number(s?.cantidad ?? 1)),
+                subtotalItem: Math.max(0, Number(s?.total ?? 0)),
+              },
+            ];
+
+      itemsList.forEach((item) => {
+        const nombre = String(item?.productoNombre ?? 'Prenda').trim();
+        const claveProd = nombre.toLowerCase();
+        const cant = Math.max(1, Number(item?.cantidad ?? 1));
+        const color = String(item?.color ?? 'General').trim();
+        const talla = String(item?.talla ?? 'Única').trim();
+        const claveVariante = `${color} • Talla ${talla}`;
+
+        if (!prodMap.has(claveProd)) {
+          prodMap.set(claveProd, {
+            nombre,
+            totalUnidades: 0,
+            variantesCount: new Map(),
+          });
+        }
+
+        const registro = prodMap.get(claveProd);
+        registro.totalUnidades += cant;
+
+        const prevVar = registro.variantesCount.get(claveVariante) ?? {
+          color,
+          talla,
+          unidades: 0,
+        };
+        prevVar.unidades += cant;
+        registro.variantesCount.set(claveVariante, prevVar);
+      });
+    });
+
+    const listaOrdenada = Array.from(prodMap.values())
+      .map((entry) => {
+        let mejorVariante = { color: 'General', talla: 'Única', unidades: 0 };
+        for (const vData of entry.variantesCount.values()) {
+          if (vData.unidades > mejorVariante.unidades) {
+            mejorVariante = vData;
+          }
+        }
+        return {
+          nombre: entry.nombre,
+          totalUnidades: entry.totalUnidades,
+          mejorColor: mejorVariante.color,
+          mejorTalla: mejorVariante.talla,
+          unidadesMejorVariante: mejorVariante.unidades,
+        };
+      })
+      .sort((a, b) => b.totalUnidades - a.totalUnidades)
+      .slice(0, 5);
+
+    return listaOrdenada;
+  }, [filteredSales]);
+
+  const maxUnidadesTop = useMemo(() => {
+    return topSellingProducts.length > 0 ? Math.max(1, topSellingProducts[0].totalUnidades) : 1;
+  }, [topSellingProducts]);
+
+  // =========================================================
+  // FUNCIONES DE GESTIÓN DE INVENTARIO (NUEVO / EDITAR / BORRAR)
+  // =========================================================
   const handleSaveProduct = async () => {
     if (!newProdName.trim()) {
       alert('Ingresa el nombre de la prenda.');
@@ -642,7 +1037,6 @@ export default function App() {
     }
   };
 
-  // Abrir Modal de Edición al pulsar una prenda en Inventario
   const openEditModal = (product) => {
     const variantesCopia = (Array.isArray(product?.variantes) ? product.variantes : []).map(
       (v) => ({
@@ -665,7 +1059,6 @@ export default function App() {
     });
   };
 
-  // Guardar cambios del Modal de Edición en Firestore
   const handleSaveEditedProduct = async () => {
     if (!editingProduct) return;
     if (!editingProduct.nombre.trim()) {
@@ -717,7 +1110,6 @@ export default function App() {
     }
   };
 
-  // Eliminar prenda completa
   const handleDeleteProduct = async (product) => {
     const seguro = window.confirm(
       `¿Seguro que deseas eliminar "${product?.nombre ?? 'esta prenda'}" de tu catálogo?`
@@ -781,11 +1173,11 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* VISTA 1: VENDER (PUNTO DE VENTA)                          */}
+      {/* VISTA 1: VENDER (PUNTO DE VENTA CON CARRITO)              */}
       {/* ========================================================= */}
       {activeTab === 'vender' && (
-        <main className="p-4 flex-1 flex flex-col gap-4 max-w-md mx-auto w-full pb-28">
-          {/* BUSCADOR AMPLIO Y CÓMODO */}
+        <main className="p-4 flex-1 flex flex-col gap-4 max-w-md mx-auto w-full pb-40">
+          {/* BUSCADOR AMPLIO */}
           <div className="relative">
             <Search className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2" />
             <input
@@ -815,7 +1207,7 @@ export default function App() {
             ))}
           </div>
 
-          {/* LISTA DE PRODUCTOS PARA VENTA */}
+          {/* LISTA DE PRODUCTOS PARA AÑADIR AL CARRITO */}
           <div className="flex flex-col gap-4">
             {filteredProducts.length === 0 ? (
               <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-8 text-center text-slate-300 text-base">
@@ -835,22 +1227,28 @@ export default function App() {
                     </span>
                   </div>
 
-                  {/* TARJETAS DE VARIANTES: COLOR PRINCIPAL + SWATCH + TALLA SECUNDARIA */}
+                  {/* TARJETAS DE VARIANTES */}
                   <div className="grid grid-cols-1 gap-2.5">
                     {(p?.variantes ?? []).map((v) => {
-                      const agotado = Number(v?.stock ?? 0) <= 0;
-                      const pocoStock =
-                        !agotado && Number(v?.stock ?? 0) <= Number(v?.stockMinimo ?? 2);
+                      const stockDisp = Math.max(0, Number(v?.stock ?? 0));
+                      const agotado = stockDisp <= 0;
+                      const pocoStock = !agotado && stockDisp <= Number(v?.stockMinimo ?? 2);
+                      const enCarritoItem = cart.find(
+                        (item) => item.productId === p.id && item.variantId === v.id
+                      );
+                      const cantEnCarrito = enCarritoItem ? enCarritoItem.cantidad : 0;
 
                       return (
                         <button
                           key={v.id}
                           type="button"
                           disabled={agotado}
-                          onClick={() => handleSelectVariantForSale(p, v)}
+                          onClick={() => handleAddToCart(p, v)}
                           className={`w-full text-left p-4 rounded-xl border transition-all flex flex-col gap-2 ${
                             agotado
                               ? 'bg-slate-950/50 border-slate-800/60 opacity-50 cursor-not-allowed'
+                              : cantEnCarrito > 0
+                              ? 'bg-indigo-950/40 border-indigo-500 shadow-md'
                               : 'bg-slate-950 hover:bg-slate-800/90 active:scale-[0.99] border-slate-800 hover:border-indigo-500/50 shadow-sm'
                           }`}
                         >
@@ -880,17 +1278,23 @@ export default function App() {
                               </span>
                             ) : pocoStock ? (
                               <span className="text-amber-400 font-bold flex items-center gap-1.5">
-                                <AlertTriangle className="w-4 h-4" /> ¡Stock bajo! Quedan {v?.stock} un.
+                                <AlertTriangle className="w-4 h-4" /> ¡Stock bajo! Quedan {stockDisp} un.
                               </span>
                             ) : (
                               <span className="text-slate-400 font-medium">
-                                Disponible: <strong className="text-slate-200">{v?.stock} un.</strong>
+                                Disponible: <strong className="text-slate-200">{stockDisp} un.</strong>
                               </span>
                             )}
 
-                            <span className="text-indigo-400 font-semibold">
-                              {agotado ? 'Sin stock' : 'Tocar para vender →'}
-                            </span>
+                            {cantEnCarrito > 0 ? (
+                              <span className="px-2.5 py-0.5 rounded-full bg-indigo-600 text-white font-extrabold text-xs">
+                                En carrito: {cantEnCarrito} un. (+1)
+                              </span>
+                            ) : (
+                              <span className="text-indigo-400 font-semibold">
+                                {agotado ? 'Sin stock' : '+ Añadir al carrito'}
+                              </span>
+                            )}
                           </div>
                         </button>
                       );
@@ -903,11 +1307,44 @@ export default function App() {
         </main>
       )}
 
+      {/* BARRA FLOTANTE DEL CARRITO MULTI-PRODUCTO */}
+      {cart.length > 0 && (
+        <div className="fixed bottom-20 left-0 right-0 z-40 px-4 max-w-md mx-auto">
+          <button
+            type="button"
+            onClick={() => setIsCartOpen(true)}
+            className="w-full h-16 bg-indigo-600 hover:bg-indigo-500 active:scale-[0.99] text-white rounded-2xl px-4 shadow-2xl shadow-indigo-600/50 border border-indigo-400/40 flex items-center justify-between transition-all"
+          >
+            <div className="flex items-center gap-3">
+              <div className="relative bg-indigo-800/80 p-2.5 rounded-xl">
+                <ShoppingCart className="w-6 h-6 text-white" />
+                <span className="absolute -top-1.5 -right-1.5 bg-emerald-400 text-slate-950 font-extrabold text-xs w-5 h-5 rounded-full flex items-center justify-center">
+                  {cartTotalItems}
+                </span>
+              </div>
+              <div className="text-left">
+                <span className="text-base font-extrabold block leading-tight">
+                  {cartTotalItems} {cartTotalItems === 1 ? 'artículo' : 'artículos'} • $
+                  {(Number.isNaN(finalTotalToCharge) ? cartSubtotal : finalTotalToCharge).toFixed(2)}
+                </span>
+                <span className="text-xs text-indigo-200 font-medium block">
+                  Toca para revisar o cobrar
+                </span>
+              </div>
+            </div>
+
+            <span className="bg-white text-indigo-700 font-extrabold text-sm px-3.5 py-2 rounded-xl shrink-0 shadow-sm">
+              Ver Carrito / Cobrar
+            </span>
+          </button>
+        </div>
+      )}
+
       {/* ========================================================= */}
       {/* VISTA 2: INVENTARIO                                       */}
       {/* ========================================================= */}
       {activeTab === 'inventario' && (
-        <main className="p-4 flex-1 flex flex-col gap-5 max-w-md mx-auto w-full pb-28">
+        <main className="p-4 flex-1 flex flex-col gap-5 max-w-md mx-auto w-full pb-36">
           {/* TARJETA KPI: TOTAL INVERTIDO */}
           <div className="bg-gradient-to-br from-indigo-950 via-slate-900 to-slate-900 border border-indigo-500/40 rounded-2xl p-5 shadow-xl">
             <div className="flex items-center justify-between mb-1">
@@ -1032,12 +1469,78 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* VISTA 3: MÉTRICAS Y CIERRE DE CAJA                        */}
+      {/* VISTA 3: MÉTRICAS, FILTRO DE FECHAS Y TOP 5 MÁS VENDIDAS  */}
       {/* ========================================================= */}
       {activeTab === 'metricas' && (
-        <main className="p-4 flex-1 flex flex-col gap-5 max-w-md mx-auto w-full pb-28">
-          <h2 className="text-xl font-bold text-white">Resumen de Caja y Ventas</h2>
+        <main className="p-4 flex-1 flex flex-col gap-5 max-w-md mx-auto w-full pb-36">
+          <div className="flex flex-col gap-3">
+            <h2 className="text-xl font-bold text-white">Métricas y Cierre de Caja</h2>
 
+            {/* BOTONES DE FILTRO POR RANGO DE FECHAS */}
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { id: 'hoy', label: 'Hoy' },
+                { id: 'semana', label: 'Esta Semana' },
+                { id: 'mes', label: 'Este Mes' },
+                { id: 'todo', label: 'Todo el Historial' },
+              ].map((filtro) => (
+                <button
+                  key={filtro.id}
+                  type="button"
+                  onClick={() => setDateRangeFilter(filtro.id)}
+                  className={`h-11 px-3 rounded-xl font-bold text-sm transition-all border ${
+                    dateRangeFilter === filtro.id
+                      ? 'bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-600/30'
+                      : 'bg-slate-900 text-slate-300 border-slate-800 hover:bg-slate-800'
+                  }`}
+                >
+                  {filtro.label}
+                </button>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setDateRangeFilter('personalizado')}
+              className={`h-11 px-4 rounded-xl font-bold text-sm transition-all border w-full ${
+                dateRangeFilter === 'personalizado'
+                  ? 'bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-600/30'
+                  : 'bg-slate-900 text-slate-300 border-slate-800 hover:bg-slate-800'
+              }`}
+            >
+              Rango de Fecha Personalizado (Desde / Hasta)
+            </button>
+
+            {/* SELECTOR DE FECHA PERSONALIZADA */}
+            {dateRangeFilter === 'personalizado' && (
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">
+                    Desde
+                  </label>
+                  <input
+                    type="date"
+                    value={customDateFrom}
+                    onChange={(e) => setCustomDateFrom(e.target.value)}
+                    className="w-full h-11 bg-slate-950 border border-slate-700 rounded-xl px-2.5 text-sm text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">
+                    Hasta
+                  </label>
+                  <input
+                    type="date"
+                    value={customDateTo}
+                    onChange={(e) => setCustomDateTo(e.target.value)}
+                    className="w-full h-11 bg-slate-950 border border-slate-700 rounded-xl px-2.5 text-sm text-white"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* TARJETAS DE VENTAS TOTALES Y GANANCIA NETA */}
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
               <span className="text-sm text-slate-400 font-semibold block">Ventas Totales</span>
@@ -1057,157 +1560,398 @@ export default function App() {
             </div>
           </div>
 
+          {/* DESGLOSE EFECTIVO VS QR / TRANSF. */}
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col gap-3">
             <h3 className="text-base font-bold text-white">Desglose por Método de Pago</h3>
-            <div className="grid grid-cols-3 gap-2 text-center">
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <span className="text-xs text-slate-400 block">Efectivo</span>
-                <span className="text-base font-bold text-white mt-1 block">
+            <div className="grid grid-cols-2 gap-3 text-center">
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5">
+                <span className="text-sm text-slate-400 font-medium block">Efectivo</span>
+                <span className="text-xl font-extrabold text-white mt-1 block">
                   ${metrics.porEfectivo.toFixed(2)}
                 </span>
               </div>
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <span className="text-xs text-slate-400 block">QR / Transf.</span>
-                <span className="text-base font-bold text-white mt-1 block">
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5">
+                <span className="text-sm text-slate-400 font-medium block">QR / Transf.</span>
+                <span className="text-xl font-extrabold text-white mt-1 block">
                   ${metrics.porQR.toFixed(2)}
-                </span>
-              </div>
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                <span className="text-xs text-slate-400 block">Tarjeta</span>
-                <span className="text-base font-bold text-white mt-1 block">
-                  ${metrics.porTarjeta.toFixed(2)}
                 </span>
               </div>
             </div>
           </div>
 
-          {/* HISTORIAL DE VENTAS ACTIVAS */}
-          <div className="flex flex-col gap-3">
-            <h3 className="text-lg font-bold text-white">Historial de Ventas</h3>
-            {activeSales.length === 0 ? (
-              <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 text-center text-slate-400 text-base">
-                Aún no hay ventas activas registradas.
+          {/* SECCIÓN: TOP 5 PRENDAS MÁS VENDIDAS */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                <BarChart3 className="w-5 h-5 text-indigo-400" />
+                Top 5 Prendas Más Vendidas
+              </h3>
+              <span className="text-xs font-bold text-indigo-300 bg-indigo-500/15 border border-indigo-500/30 px-2.5 py-1 rounded-lg">
+                Ranking
+              </span>
+            </div>
+
+            {topSellingProducts.length === 0 ? (
+              <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-5 text-center text-slate-400 text-sm">
+                No hay ventas registradas en este período para calcular el ranking.
               </div>
             ) : (
-              activeSales.map((s) => (
-                <div
-                  key={s.id}
-                  className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col gap-3"
-                >
-                  <div className="flex justify-between items-start gap-2">
-                    <div>
-                      <h4 className="text-lg font-bold text-white">{s?.productoNombre ?? 'Prenda'}</h4>
-                      <div className="flex items-center gap-2 mt-1 flex-wrap">
-                        <span
-                          className="w-4 h-4 rounded-full border shrink-0"
-                          style={getColorSwatchStyle(s?.color)}
-                        />
-                        <span className="text-base font-bold text-slate-200">
-                          {s?.color ?? 'General'}
-                        </span>
-                        <span className="text-xs text-slate-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
-                          Talla: {s?.talla ?? 'Única'}
+              <div className="flex flex-col gap-3.5">
+                {topSellingProducts.map((prod, index) => {
+                  const porcentaje = Math.max(
+                    12,
+                    Math.round((prod.totalUnidades / maxUnidadesTop) * 100)
+                  );
+
+                  return (
+                    <div
+                      key={prod.nombre + index}
+                      className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 flex flex-col gap-2"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2.5">
+                          <span
+                            className={`w-7 h-7 rounded-lg font-extrabold text-sm flex items-center justify-center shrink-0 ${
+                              index === 0
+                                ? 'bg-amber-500 text-slate-950'
+                                : index === 1
+                                ? 'bg-slate-300 text-slate-950'
+                                : index === 2
+                                ? 'bg-amber-700 text-white'
+                                : 'bg-slate-800 text-slate-300'
+                            }`}
+                          >
+                            #{index + 1}
+                          </span>
+                          <div>
+                            <h4 className="text-base font-bold text-white leading-snug">
+                              {prod.nombre}
+                            </h4>
+                            <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                              <span className="text-xs text-slate-400">Más vendido:</span>
+                              <span
+                                className="w-3.5 h-3.5 rounded-full border shrink-0"
+                                style={getColorSwatchStyle(prod.mejorColor)}
+                              />
+                              <span className="text-xs font-bold text-slate-200">
+                                {prod.mejorColor}
+                              </span>
+                              <span className="text-xs text-slate-400">
+                                (Talla {prod.mejorTalla})
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <span className="px-3 py-1 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-extrabold text-sm shrink-0">
+                          {prod.totalUnidades} un.
                         </span>
                       </div>
-                      <span className="text-sm text-slate-400 block mt-1">
-                        Cant: <strong className="text-white">{s?.cantidad ?? 1}</strong> • Pago:{' '}
-                        <strong className="text-white">{s?.metodoPago ?? 'Efectivo'}</strong>
-                      </span>
-                    </div>
 
-                    <div className="text-right">
-                      <span className="text-lg font-bold text-emerald-400 block">
-                        ${Number(s?.total ?? 0).toFixed(2)}
-                      </span>
-                      <span className="text-xs text-slate-500">{s?.fechaLocal ?? ''}</span>
+                      {/* Barra de progreso de volumen relativo */}
+                      <div className="w-full h-2.5 bg-slate-900 rounded-full overflow-hidden mt-1">
+                        <div
+                          className="h-full bg-gradient-to-r from-indigo-500 to-emerald-400 rounded-full transition-all"
+                          style={{ width: `${porcentaje}%` }}
+                        />
+                      </div>
                     </div>
-                  </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
-                  <button
-                    type="button"
-                    disabled={annulLoadingId === s?.id}
-                    onClick={() => handleAnnulSale(s)}
-                    className="w-full h-12 bg-rose-500/10 hover:bg-rose-500/20 active:scale-[0.99] border border-rose-500/30 text-rose-300 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all"
+          {/* HISTORIAL DE VENTAS FILTRADO CON DESGLOSE DE TICKET */}
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-white">
+                Historial de Ventas ({filteredSales.length})
+              </h3>
+            </div>
+
+            {filteredSales.length === 0 ? (
+              <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 text-center text-slate-400 text-base">
+                No hay ventas registradas en el período seleccionado.
+              </div>
+            ) : (
+              filteredSales.map((s) => {
+                const itemsTicket =
+                  Array.isArray(s?.items) && s.items.length > 0
+                    ? s.items
+                    : [
+                        {
+                          productoNombre: s?.productoNombre ?? 'Prenda',
+                          color: s?.color ?? 'General',
+                          talla: s?.talla ?? 'Única',
+                          cantidad: Math.max(1, Number(s?.cantidad ?? 1)),
+                          precioUnitario: Number(s?.precioUnitario ?? s?.total ?? 0),
+                          subtotalItem: Number(s?.total ?? 0),
+                        },
+                      ];
+
+                return (
+                  <div
+                    key={s.id}
+                    className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col gap-3"
                   >
-                    <Trash2 className="w-4 h-4" />
-                    {annulLoadingId === s?.id
-                      ? 'Procesando anulación...'
-                      : 'Anular venta y restaurar stock'}
-                  </button>
-                </div>
-              ))
+                    {/* Cabecera del Ticket */}
+                    <div className="flex justify-between items-start border-b border-slate-800 pb-2.5">
+                      <div>
+                        <span className="text-xs font-bold uppercase tracking-wider text-indigo-400 block">
+                          Pago: {s?.metodoPago ?? 'Efectivo'}
+                        </span>
+                        <span className="text-xs text-slate-400 block mt-0.5">
+                          {s?.fechaLocal ?? ''}
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-xl font-extrabold text-emerald-400 block">
+                          ${Number(s?.total ?? 0).toFixed(2)}
+                        </span>
+                        {Number(s?.descuento ?? 0) > 0 && (
+                          <span className="text-xs text-amber-400 font-semibold block">
+                            Desc: -${Number(s.descuento).toFixed(2)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Desglose de prendas vendidas en este ticket */}
+                    <div className="flex flex-col gap-2">
+                      {itemsTicket.map((item, idx) => (
+                        <div
+                          key={idx}
+                          className="bg-slate-950 border border-slate-800/80 rounded-xl p-3 flex items-center justify-between gap-2"
+                        >
+                          <div>
+                            <h4 className="text-base font-bold text-white leading-snug">
+                              {item?.productoNombre ?? 'Prenda'}
+                            </h4>
+                            <div className="flex items-center gap-2 mt-1 flex-wrap">
+                              <span
+                                className="w-4 h-4 rounded-full border shrink-0"
+                                style={getColorSwatchStyle(item?.color)}
+                              />
+                              <span className="text-sm font-bold text-slate-200">
+                                {item?.color ?? 'General'}
+                              </span>
+                              <span className="text-xs text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                                Talla: {item?.talla ?? 'Única'}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="text-right shrink-0">
+                            <span className="text-sm font-extrabold text-white bg-indigo-600/20 border border-indigo-500/30 px-2.5 py-0.5 rounded-lg inline-block">
+                              x{item?.cantidad ?? 1}
+                            </span>
+                            <span className="text-xs text-slate-400 block mt-1">
+                              ${Number(item?.subtotalItem ?? item?.precioUnitario ?? 0).toFixed(2)}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={annulLoadingId === s?.id}
+                      onClick={() => handleAnnulSale(s)}
+                      className="w-full h-12 bg-rose-500/10 hover:bg-rose-500/20 active:scale-[0.99] border border-rose-500/30 text-rose-300 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all mt-1"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      {annulLoadingId === s?.id
+                        ? 'Procesando anulación...'
+                        : 'Anular venta y restaurar stock'}
+                    </button>
+                  </div>
+                );
+              })
             )}
           </div>
         </main>
       )}
 
       {/* ========================================================= */}
-      {/* MODAL DE COBRO (AL TOCAR UNA VARIANTE EN VENDER)          */}
+      {/* MODAL DEL CARRITO DE COMPRAS MULTI-PRODUCTO               */}
       {/* ========================================================= */}
-      {cartItem && (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-5 shadow-2xl flex flex-col gap-4 my-auto">
-            <div className="border-b border-slate-800 pb-3">
-              <span className="text-xs font-bold uppercase tracking-wider text-indigo-400">
-                Confirmar Venta
-              </span>
-              <h3 className="text-xl font-bold text-white mt-0.5">
-                {cartItem?.product?.nombre}
-              </h3>
-              <div className="flex items-center gap-2.5 mt-2">
-                <span
-                  className="w-5 h-5 rounded-full border shrink-0"
-                  style={getColorSwatchStyle(cartItem?.variant?.color)}
-                />
-                <span className="text-lg font-bold text-white">
-                  {cartItem?.variant?.color}
-                </span>
-                <span className="text-xs text-slate-400 bg-slate-950 px-2.5 py-1 rounded-md border border-slate-800">
-                  Talla: {cartItem?.variant?.talla}
-                </span>
-              </div>
-            </div>
-
-            {/* Selector de Cantidad */}
-            <div>
-              <label className="text-sm font-semibold text-slate-300 block mb-2">
-                Cantidad a vender (Disponible: {cartItem?.variant?.stock} un.)
-              </label>
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => handleQtyChange(-1)}
-                  className="w-14 h-12 bg-slate-800 active:bg-slate-700 border border-slate-700 rounded-xl text-xl font-bold text-white"
-                >
-                  -
-                </button>
-                <div className="flex-1 h-12 bg-slate-950 border border-slate-800 rounded-xl flex items-center justify-center text-xl font-extrabold text-white">
-                  {cartQty}
+      {isCartOpen && cart.length > 0 && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-5 shadow-2xl flex flex-col gap-4 my-auto max-h-[92vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <ShoppingCart className="w-6 h-6 text-indigo-400" />
+                <div>
+                  <h3 className="text-xl font-bold text-white leading-none">
+                    Carrito de Compra
+                  </h3>
+                  <span className="text-xs text-slate-400 font-medium">
+                    {cartTotalItems} {cartTotalItems === 1 ? 'unidad seleccionada' : 'unidades seleccionadas'}
+                  </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => handleQtyChange(1)}
-                  className="w-14 h-12 bg-indigo-600 active:bg-indigo-500 rounded-xl text-xl font-bold text-white"
-                >
-                  +
-                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm('¿Vaciar todo el carrito?')) {
+                    setCart([]);
+                    setIsCartOpen(false);
+                  }
+                }}
+                className="text-xs font-bold text-rose-400 bg-rose-500/10 border border-rose-500/30 px-3 py-1.5 rounded-xl"
+              >
+                Vaciar
+              </button>
+            </div>
+
+            {/* LISTA DE ARTÍCULOS EN EL CARRITO */}
+            <div className="flex flex-col gap-3 max-h-64 overflow-y-auto pr-1">
+              {cart.map((item) => {
+                const maxDisp = getLiveStock(item.productId, item.variantId, item.stockMax);
+                return (
+                  <div
+                    key={item.productId + '-' + item.variantId}
+                    className="bg-slate-950 border border-slate-800 rounded-2xl p-3.5 flex flex-col gap-2.5"
+                  >
+                    <div className="flex justify-between items-start gap-2">
+                      <div>
+                        <h4 className="text-base font-bold text-white leading-snug">
+                          {item.productoNombre}
+                        </h4>
+                        <div className="flex items-center gap-2 mt-1 flex-wrap">
+                          <span
+                            className="w-4 h-4 rounded-full border shrink-0"
+                            style={getColorSwatchStyle(item.color)}
+                          />
+                          <span className="text-sm font-bold text-slate-200">
+                            {item.color}
+                          </span>
+                          <span className="text-xs text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                            Talla: {item.talla}
+                          </span>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveCartItem(item.productId, item.variantId)}
+                        className="p-1.5 text-rose-400 hover:bg-rose-500/15 rounded-lg"
+                        title="Quitar artículo"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-900">
+                      <div>
+                        <span className="text-xs text-slate-400 block">
+                          Unitario: ${item.precioUnitario.toFixed(2)} (Máx: {maxDisp})
+                        </span>
+                        <span className="text-base font-extrabold text-emerald-400">
+                          Subtotal: ${(item.precioUnitario * item.cantidad).toFixed(2)}
+                        </span>
+                      </div>
+
+                      {/* Controles rápidos - / + */}
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleUpdateCartQty(item.productId, item.variantId, -1)
+                          }
+                          className="w-10 h-10 bg-slate-800 active:bg-slate-700 border border-slate-700 rounded-xl text-lg font-bold text-white flex items-center justify-center"
+                        >
+                          -
+                        </button>
+                        <span className="min-w-[32px] text-center text-lg font-extrabold text-white">
+                          {item.cantidad}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleUpdateCartQty(item.productId, item.variantId, 1)
+                          }
+                          className="w-10 h-10 bg-indigo-600 active:bg-indigo-500 rounded-xl text-lg font-bold text-white flex items-center justify-center"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* SUBTOTAL, DESCUENTO Y TOTAL EDITABLE */}
+            <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 flex flex-col gap-3">
+              <div className="flex justify-between items-center text-base">
+                <span className="text-slate-400 font-semibold">Subtotal:</span>
+                <span className="font-bold text-white">${cartSubtotal.toFixed(2)}</span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 items-center">
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">
+                    Descuento ($)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="0.00"
+                    value={discountInput}
+                    onChange={(e) => {
+                      setIsTotalOverridden(false);
+                      setDiscountInput(e.target.value);
+                    }}
+                    className="w-full h-12 bg-slate-900 border border-slate-700 rounded-xl px-3 text-base font-bold text-amber-400"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">
+                    Total a Cobrar ($)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    placeholder="0.00"
+                    value={manualTotalInput}
+                    onChange={(e) => {
+                      setIsTotalOverridden(true);
+                      setManualTotalInput(e.target.value);
+                      const val = parseFloat(e.target.value);
+                      if (!Number.isNaN(val)) {
+                        const descImpl = Math.max(0, cartSubtotal - val);
+                        setDiscountInput(descImpl > 0 ? descImpl.toFixed(2) : '');
+                      }
+                    }}
+                    className={`w-full h-12 bg-slate-900 border rounded-xl px-3 text-lg font-extrabold text-center ${
+                      isCartTotalValid
+                        ? 'border-emerald-500/60 text-emerald-400'
+                        : 'border-rose-500 text-rose-400'
+                    }`}
+                  />
+                </div>
               </div>
             </div>
 
-            {/* Método de Pago */}
+            {/* SELECTOR EXCLUSIVO DE MÉTODO DE PAGO: EFECTIVO Y QR / TRANSF. */}
             <div>
               <label className="text-sm font-semibold text-slate-300 block mb-2">
                 Método de Pago
               </label>
-              <div className="grid grid-cols-3 gap-2">
-                {['Efectivo', 'QR', 'Tarjeta'].map((metodo) => (
+              <div className="grid grid-cols-2 gap-3">
+                {['Efectivo', 'QR / Transf.'].map((metodo) => (
                   <button
                     key={metodo}
                     type="button"
                     onClick={() => setPaymentMethod(metodo)}
-                    className={`h-12 rounded-xl font-bold text-base border transition-all ${
+                    className={`h-14 rounded-xl font-extrabold text-base border transition-all ${
                       paymentMethod === metodo
-                        ? 'bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-600/30'
+                        ? 'bg-indigo-600 text-white border-indigo-400 shadow-lg shadow-indigo-600/30'
                         : 'bg-slate-950 text-slate-300 border-slate-800'
                     }`}
                   >
@@ -1217,56 +1961,28 @@ export default function App() {
               </div>
             </div>
 
-            {/* Total a cobrar obligatorio > 0 */}
-            <div>
-              <div className="flex justify-between items-center mb-1.5">
-                <label className="text-sm font-semibold text-slate-300">
-                  Total a Cobrar ($)
-                </label>
-                <span className="text-xs text-slate-400">
-                  Sugerido: $
-                  {(Number(cartItem?.variant?.precio ?? 0) * cartQty).toFixed(2)}
-                </span>
-              </div>
-              <input
-                type="number"
-                step="0.01"
-                min="0.01"
-                placeholder="0.00"
-                value={manualTotalInput}
-                onChange={(e) => setManualTotalInput(e.target.value)}
-                className={`w-full h-14 bg-slate-950 border rounded-xl px-4 text-2xl font-extrabold text-center outline-none ${
-                  isSaleTotalValid
-                    ? 'border-emerald-500/50 text-emerald-400'
-                    : 'border-rose-500 text-rose-400'
-                }`}
-              />
-              {!isSaleTotalValid && (
-                <span className="text-xs text-rose-400 font-semibold block mt-1.5 text-center">
-                  Ingresa un monto válido mayor a $0.00 para habilitar el cobro.
-                </span>
-              )}
-            </div>
-
-            <div className="flex flex-col gap-2.5 pt-2">
+            {/* BOTONES DE CONFIRMACIÓN */}
+            <div className="flex flex-col gap-2.5 pt-1">
               <button
                 type="button"
-                disabled={isProcessingSale ? true : !isSaleTotalValid}
-                onClick={handleConfirmSale}
+                disabled={isProcessingSale ? true : !isCartTotalValid}
+                onClick={handleConfirmCartSale}
                 className={`w-full h-14 rounded-xl text-lg font-extrabold transition-all ${
-                  isSaleTotalValid && !isProcessingSale
+                  isCartTotalValid && !isProcessingSale
                     ? 'bg-emerald-600 hover:bg-emerald-500 active:scale-[0.99] text-white shadow-lg shadow-emerald-600/30'
                     : 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-60'
                 }`}
               >
-                {isProcessingSale ? 'Procesando...' : 'Cobrar y Descontar Stock'}
+                {isProcessingSale
+                  ? 'Procesando Venta...'
+                  : `Cobrar $${(Number.isNaN(finalTotalToCharge) ? 0 : finalTotalToCharge).toFixed(2)}`}
               </button>
               <button
                 type="button"
-                onClick={() => setCartItem(null)}
-                className="w-full h-12 bg-slate-800 text-slate-300 rounded-xl text-base font-semibold"
+                onClick={() => setIsCartOpen(false)}
+                className="w-full h-12 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-base font-semibold"
               >
-                Cancelar
+                Seguir agregando prendas
               </button>
             </div>
           </div>
