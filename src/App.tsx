@@ -224,6 +224,7 @@ export default function App() {
 
   const [products, setProducts] = useState([]);
   const [sales, setSales] = useState([]);
+  const [apartados, setApartados] = useState([]);
 
   // =========================================================
   // ESTADOS DEL PUNTO DE VENTA Y CARRITO MULTI-PRODUCTO
@@ -241,9 +242,22 @@ export default function App() {
   const [annulLoadingId, setAnnulLoadingId] = useState(null);
 
   // =========================================================
+  // ESTADOS DEL MÓDULO DE APARTADOS / RESERVAS
+  // =========================================================
+  const [isLayawayModalOpen, setIsLayawayModalOpen] = useState(false);
+  const [layawayClientName, setLayawayClientName] = useState('');
+  const [layawayClientPhone, setLayawayClientPhone] = useState('');
+  const [layawayDepositInput, setLayawayDepositInput] = useState('');
+  const [layawayPaymentMethod, setLayawayPaymentMethod] = useState('Efectivo');
+  const [apartadosFilter, setApartadosFilter] = useState('pendiente'); // 'pendiente', 'completado', 'cancelado'
+  const [liquidatingApartado, setLiquidatingApartado] = useState(null);
+  const [liquidatePaymentMethod, setLiquidatePaymentMethod] = useState('Efectivo');
+  const [isProcessingApartado, setIsProcessingApartado] = useState(false);
+
+  // =========================================================
   // ESTADOS DE FILTROS DE FECHAS EN MÉTRICAS
   // =========================================================
-  const [dateRangeFilter, setDateRangeFilter] = useState('hoy'); // 'hoy', 'semana', 'mes', 'todo', 'personalizado'
+  const [dateRangeFilter, setDateRangeFilter] = useState('hoy');
   const [customDateFrom, setCustomDateFrom] = useState('');
   const [customDateTo, setCustomDateTo] = useState('');
 
@@ -283,7 +297,7 @@ export default function App() {
     return () => unsubscribeAuth();
   }, []);
 
-  // Sincronización en tiempo real con Firestore
+  // Sincronización en tiempo real con Firestore (Products, Sales y Apartados)
   useEffect(() => {
     if (!user ? true : !db) return;
 
@@ -310,9 +324,23 @@ export default function App() {
       (error) => console.warn('Firestore sales:', error?.message)
     );
 
+    const qApartados = query(collection(db, 'apartados'), orderBy('timestamp', 'desc'), limit(200));
+    const unsubApartados = onSnapshot(
+      qApartados,
+      (snapshot) => {
+        const apartadosList = snapshot.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        }));
+        setApartados(apartadosList);
+      },
+      (error) => console.warn('Firestore apartados:', error?.message)
+    );
+
     return () => {
       unsubProducts();
       unsubSales();
+      unsubApartados();
     };
   }, [user]);
 
@@ -369,15 +397,24 @@ export default function App() {
     }, 0);
   }, [products]);
 
+  // Conteo de apartados pendientes para el badge de navegación
+  const pendingApartadosCount = useMemo(() => {
+    return apartados.filter((a) => (a?.estado ?? 'pendiente') === 'pendiente').length;
+  }, [apartados]);
+
+  const filteredApartados = useMemo(() => {
+    return apartados.filter((a) => (a?.estado ?? 'pendiente') === apartadosFilter);
+  }, [apartados, apartadosFilter]);
+
   // =========================================================
-  // LÓGICA DEL CARRITO MULTI-PRODUCTO
+  // LÓGICA DEL CARRITO MULTI-PRODUCTO Y BLINDAJE DE STOCK
   // =========================================================
   const getLiveStock = (productId, variantId, fallbackStock) => {
     const prod = products.find((p) => p?.id === productId);
-    if (!prod) return Number(fallbackStock ?? 0);
+    if (!prod) return Math.max(0, Number(fallbackStock ?? 0));
     const vars = Array.isArray(prod?.variantes) ? prod.variantes : [];
     const foundVar = vars.find((v) => v?.id === variantId);
-    return foundVar ? Math.max(0, Number(foundVar?.stock ?? 0)) : Number(fallbackStock ?? 0);
+    return foundVar ? Math.max(0, Number(foundVar?.stock ?? 0)) : Math.max(0, Number(fallbackStock ?? 0));
   };
 
   const cartTotalItems = useMemo(() => {
@@ -396,7 +433,6 @@ export default function App() {
     return Number.isNaN(val) ? 0 : Math.max(0, val);
   }, [discountInput]);
 
-  // Sincronizar el Total a Cobrar cuando cambia el subtotal o el descuento
   useEffect(() => {
     if (!isTotalOverridden) {
       const calculado = Math.max(0, cartSubtotal - parsedDiscount);
@@ -414,11 +450,35 @@ export default function App() {
     return cart.length > 0 && !Number.isNaN(finalTotalToCharge) && finalTotalToCharge > 0;
   }, [cart.length, finalTotalToCharge]);
 
-  // Añadir variante al carrito desde el catálogo
+  // Cálculos automáticos para el Modal de Apartado con Seña
+  const parsedLayawayDeposit = useMemo(() => {
+    const texto = String(layawayDepositInput ?? '').trim();
+    if (!texto) return NaN;
+    return parseFloat(texto);
+  }, [layawayDepositInput]);
+
+  const layawayOrderTotal = useMemo(() => {
+    return Number.isNaN(finalTotalToCharge) ? cartSubtotal : finalTotalToCharge;
+  }, [finalTotalToCharge, cartSubtotal]);
+
+  const layawayPendingBalance = useMemo(() => {
+    if (Number.isNaN(parsedLayawayDeposit)) return layawayOrderTotal;
+    return Math.max(0, Number((layawayOrderTotal - parsedLayawayDeposit).toFixed(2)));
+  }, [layawayOrderTotal, parsedLayawayDeposit]);
+
+  const isLayawayFormValid = useMemo(() => {
+    const tieneNombre = Boolean(layawayClientName.trim());
+    const senaValida =
+      !Number.isNaN(parsedLayawayDeposit) &&
+      parsedLayawayDeposit > 0 &&
+      parsedLayawayDeposit < layawayOrderTotal;
+    return cart.length > 0 && tieneNombre && senaValida;
+  }, [cart.length, layawayClientName, parsedLayawayDeposit, layawayOrderTotal]);
+
+  // Añadir variante al carrito (bloqueado si stock <= 0 o si ya alcanzó el máximo disponible)
   const handleAddToCart = (product, variant) => {
     const stockDisp = Math.max(0, Number(variant?.stock ?? 0));
     if (stockDisp <= 0) {
-      alert('Esta variante no tiene stock disponible.');
       return;
     }
 
@@ -429,7 +489,7 @@ export default function App() {
 
     if (cantidadActualEnCarrito + 1 > stockDisp) {
       alert(
-        `Stock máximo alcanzado. Solo hay ${stockDisp} un. disponibles de ${product.nombre} (${variant.color}) y ya tienes ${cantidadActualEnCarrito} en el carrito.`
+        `Stock máximo alcanzado. Solo hay ${stockDisp} un. disponibles de ${product.nombre} (${variant.color}) y ya tienes todas en el carrito.`
       );
       return;
     }
@@ -473,12 +533,10 @@ export default function App() {
           const nuevaCant = item.cantidad + delta;
 
           if (delta > 0 && nuevaCant > maxStock) {
-            alert(`No puedes agregar más. Solo existen ${maxStock} unidades en stock.`);
-            updated.push({ ...item, stockMax: maxStock });
+            updated.push({ ...item, cantidad: maxStock, stockMax: maxStock });
           } else if (nuevaCant > 0) {
             updated.push({ ...item, cantidad: nuevaCant, stockMax: maxStock });
           }
-          // Si nuevaCant <= 0, no se agrega a updated (se elimina del carrito)
         } else {
           updated.push(item);
         }
@@ -490,7 +548,7 @@ export default function App() {
     });
   };
 
-  // Eliminar un ítem del carrito directamente
+  // Eliminar un ítem del carrito
   const handleRemoveCartItem = (productId, variantId) => {
     setIsTotalOverridden(false);
     setCart((prev) => {
@@ -504,7 +562,9 @@ export default function App() {
     });
   };
 
-  // Confirmar y cobrar todo el carrito en una sola transacción
+  // =========================================================
+  // 1. COBRAR VENTA DIRECTA DEL CARRITO
+  // =========================================================
   const handleConfirmCartSale = async () => {
     if (cart.length === 0 ? true : isProcessingSale) return;
     if (!isCartTotalValid) {
@@ -544,7 +604,6 @@ export default function App() {
     try {
       if (user && isFirebaseConnected) {
         await runTransaction(db, async (transaction) => {
-          // Agrupar por productId para leer y actualizar cada producto una sola vez en la transacción
           const mapaPorProducto = new Map();
           for (const item of itemsVendidos) {
             const pid = String(item.productId ?? '').trim();
@@ -555,7 +614,6 @@ export default function App() {
             mapaPorProducto.get(pid).push(item);
           }
 
-          // 1. Fase de Lectura y Validación estricta de stock
           const actualizacionesPendientes = [];
           for (const [pid, itemsDelProd] of mapaPorProducto.entries()) {
             const prodRef = doc(db, 'products', pid);
@@ -601,14 +659,13 @@ export default function App() {
             actualizacionesPendientes.push({ prodRef, listaVariantes });
           }
 
-          // 2. Fase de Escritura: descontar stock de todos los productos
           for (const act of actualizacionesPendientes) {
             transaction.update(act.prodRef, { variantes: act.listaVariantes });
           }
 
-          // 3. Registrar la venta única agrupada
           const nuevaVentaRef = doc(collection(db, 'sales'));
           transaction.set(nuevaVentaRef, {
+            tipoMovimiento: 'venta_directa',
             esVentaAgrupada: true,
             items: itemsVendidos,
             productId: itemsVendidos[0]?.productId ?? '',
@@ -634,7 +691,6 @@ export default function App() {
           });
         });
       } else {
-        // Modo local de respaldo
         setProducts((prev) =>
           prev.map((p) => {
             const itemsDeEsteProd = itemsVendidos.filter((i) => i.productId === p.id);
@@ -657,7 +713,6 @@ export default function App() {
       );
       setTimeout(() => setSaleSuccessMessage(null), 4000);
 
-      // Limpiar carrito
       setCart([]);
       setDiscountInput('');
       setManualTotalInput('');
@@ -671,12 +726,396 @@ export default function App() {
   };
 
   // =========================================================
-  // ANULACIÓN SEGURA DE VENTA (SOPORTA MULTI-PRODUCTO Y ANTIGUAS)
+  // 2. CREAR APARTADO CON SEÑA (DESCUENTA STOCK Y SUMA SEÑA A CAJA)
+  // =========================================================
+  const handleOpenLayawayModal = () => {
+    if (!isCartTotalValid) {
+      alert('Verifica que el total del pedido sea válido antes de apartar.');
+      return;
+    }
+    const sugerenciaMitad = (layawayOrderTotal * 0.5).toFixed(2);
+    setLayawayClientName('');
+    setLayawayClientPhone('');
+    setLayawayDepositInput(sugerenciaMitad);
+    setLayawayPaymentMethod(paymentMethod);
+    setIsLayawayModalOpen(true);
+  };
+
+  const handleConfirmLayaway = async () => {
+    if (!isLayawayFormValid ? true : isProcessingApartado) return;
+
+    const cliente = layawayClientName.trim();
+    const telefono = layawayClientPhone.trim();
+    const totalPedido = Number(layawayOrderTotal.toFixed(2));
+    const montoSena = Number(parsedLayawayDeposit.toFixed(2));
+    const saldoPendiente = Number((totalPedido - montoSena).toFixed(2));
+
+    const costoTotalPedido = Number(
+      cart
+        .reduce((acc, item) => acc + Number(item.costoUnitario ?? 0) * Number(item.cantidad ?? 1), 0)
+        .toFixed(2)
+    );
+    // Costo proporcional a la seña cobrada hoy para que la ganancia del día sea exacta
+    const proporcionSena = totalPedido > 0 ? montoSena / totalPedido : 0;
+    const costoProporcionalSena = Number((costoTotalPedido * proporcionSena).toFixed(2));
+    const gananciaSenaHoy = Number((montoSena - costoProporcionalSena).toFixed(2));
+
+    const itemsReservados = cart.map((item) => ({
+      productId: item.productId,
+      variantId: item.variantId,
+      productoNombre: item.productoNombre,
+      color: item.color,
+      talla: item.talla,
+      cantidad: Number(item.cantidad),
+      precioUnitario: Number(item.precioUnitario),
+      costoUnitario: Number(item.costoUnitario),
+      subtotalItem: Number((item.precioUnitario * item.cantidad).toFixed(2)),
+    }));
+
+    const ahora = new Date();
+    const fechaFormateada =
+      ahora.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' }) +
+      ' ' +
+      ahora.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    setIsProcessingApartado(true);
+    try {
+      if (user && isFirebaseConnected) {
+        await runTransaction(db, async (transaction) => {
+          const mapaPorProducto = new Map();
+          for (const item of itemsReservados) {
+            const pid = String(item.productId ?? '').trim();
+            if (!pid ? true : pid.startsWith('local-')) continue;
+            if (!mapaPorProducto.has(pid)) {
+              mapaPorProducto.set(pid, []);
+            }
+            mapaPorProducto.get(pid).push(item);
+          }
+
+          const actualizacionesPendientes = [];
+          for (const [pid, itemsDelProd] of mapaPorProducto.entries()) {
+            const prodRef = doc(db, 'products', pid);
+            const prodSnap = await transaction.get(prodRef);
+            if (!prodSnap.exists()) {
+              throw new Error(`El producto "${itemsDelProd[0]?.productoNombre}" ya no existe.`);
+            }
+
+            const data = prodSnap.data();
+            const listaVariantes = Array.isArray(data?.variantes) ? [...data.variantes] : [];
+
+            for (const itemPedido of itemsDelProd) {
+              const idxVar = listaVariantes.findIndex((v) => {
+                if (!v) return false;
+                if (v?.id && itemPedido?.variantId && String(v.id) === String(itemPedido.variantId)) {
+                  return true;
+                }
+                return (
+                  String(v?.color ?? '').toLowerCase() === String(itemPedido.color ?? '').toLowerCase() &&
+                  String(v?.talla ?? '').toLowerCase() === String(itemPedido.talla ?? '').toLowerCase()
+                );
+              });
+
+              if (idxVar === -1) {
+                throw new Error(
+                  `No se encontró la variante ${itemPedido.color} (${itemPedido.talla}) de ${itemPedido.productoNombre}.`
+                );
+              }
+
+              const stockActual = Number(listaVariantes[idxVar]?.stock ?? 0);
+              if (stockActual < itemPedido.cantidad) {
+                throw new Error(
+                  `Stock insuficiente para apartar ${itemPedido.productoNombre} (${itemPedido.color}). Disponible: ${stockActual} un.`
+                );
+              }
+
+              listaVariantes[idxVar] = {
+                ...listaVariantes[idxVar],
+                stock: stockActual - itemPedido.cantidad,
+              };
+            }
+
+            actualizacionesPendientes.push({ prodRef, listaVariantes });
+          }
+
+          // 1. Descontar stock de Firestore inmediatamente
+          for (const act of actualizacionesPendientes) {
+            transaction.update(act.prodRef, { variantes: act.listaVariantes });
+          }
+
+          // 2. Crear referencias de Apartado y de Ingreso de Seña en Caja
+          const nuevoApartadoRef = doc(collection(db, 'apartados'));
+          const nuevaVentaSenaRef = doc(collection(db, 'sales'));
+
+          transaction.set(nuevoApartadoRef, {
+            clienteNombre: cliente,
+            clienteTelefono: telefono,
+            items: itemsReservados,
+            cantidadTotal: cartTotalItems,
+            totalPedido: totalPedido,
+            montoPagado: montoSena,
+            saldoPendiente: saldoPendiente,
+            costoTotalPedido: costoTotalPedido,
+            metodoPagoSena: layawayPaymentMethod,
+            saleSenaId: nuevaVentaSenaRef.id,
+            estado: 'pendiente',
+            timestamp: serverTimestamp(),
+            fechaIso: ahora.toISOString(),
+            fechaLocal: fechaFormateada,
+          });
+
+          // 3. Registrar la seña cobrada hoy en la caja del día
+          transaction.set(nuevaVentaSenaRef, {
+            tipoMovimiento: 'sena_apartado',
+            apartadoId: nuevoApartadoRef.id,
+            clienteNombre: cliente,
+            esVentaAgrupada: true,
+            items: itemsReservados,
+            productId: itemsReservados[0]?.productId ?? '',
+            variantId: itemsReservados[0]?.variantId ?? '',
+            productoNombre: `Seña Apartado - ${cliente}`,
+            color: itemsReservados.length === 1 ? itemsReservados[0].color : 'Varios',
+            talla: itemsReservados.length === 1 ? itemsReservados[0].talla : 'Varias',
+            cantidad: cartTotalItems,
+            subtotal: totalPedido,
+            descuento: 0,
+            total: montoSena,
+            costoTotal: costoProporcionalSena,
+            gananciaNeta: gananciaSenaHoy,
+            metodoPago: layawayPaymentMethod,
+            timestamp: serverTimestamp(),
+            fechaIso: ahora.toISOString(),
+            fechaLocal: fechaFormateada,
+          });
+        });
+      }
+
+      setSaleSuccessMessage(
+        `Apartado creado para ${cliente}. Seña en caja: $${montoSena.toFixed(2)} (Pendiente: $${saldoPendiente.toFixed(2)})`
+      );
+      setTimeout(() => setSaleSuccessMessage(null), 5000);
+
+      setCart([]);
+      setDiscountInput('');
+      setManualTotalInput('');
+      setIsTotalOverridden(false);
+      setIsLayawayModalOpen(false);
+      setIsCartOpen(false);
+      setActiveTab('apartados');
+    } catch (err) {
+      alert('No se pudo registrar el apartado: ' + (err?.message ?? 'Error desconocido'));
+    } finally {
+      setIsProcessingApartado(false);
+    }
+  };
+
+  // =========================================================
+  // 3. LIQUIDAR / COMPLETAR APARTADO (COBRAR SALDO RESTANTE)
+  // =========================================================
+  const handleConfirmLiquidateApartado = async () => {
+    if (!liquidatingApartado ? true : isProcessingApartado) return;
+
+    const ap = liquidatingApartado;
+    const saldoRestante = Math.max(0, Number(ap?.saldoPendiente ?? 0));
+    const totalPedido = Math.max(0, Number(ap?.totalPedido ?? 0));
+    const costoTotalPedido = Math.max(0, Number(ap?.costoTotalPedido ?? 0));
+
+    // Costo restante proporcional al saldo liquidado hoy
+    const proporcionSaldo = totalPedido > 0 ? saldoRestante / totalPedido : 0;
+    const costoProporcionalSaldo = Number((costoTotalPedido * proporcionSaldo).toFixed(2));
+    const gananciaSaldoHoy = Number((saldoRestante - costoProporcionalSaldo).toFixed(2));
+
+    const ahora = new Date();
+    const fechaFormateada =
+      ahora.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' }) +
+      ' ' +
+      ahora.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    setIsProcessingApartado(true);
+    try {
+      if (user && isFirebaseConnected) {
+        await runTransaction(db, async (transaction) => {
+          const apRef = doc(db, 'apartados', String(ap.id));
+          const nuevaVentaLiqRef = doc(collection(db, 'sales'));
+
+          transaction.update(apRef, {
+            estado: 'completado',
+            montoPagado: totalPedido,
+            saldoPendiente: 0,
+            metodoPagoLiquidacion: liquidatePaymentMethod,
+            saleLiquidacionId: nuevaVentaLiqRef.id,
+            fechaLiquidacionLocal: fechaFormateada,
+          });
+
+          // Sumar el saldo restante a la caja del día actual (sin volver a tocar stock)
+          transaction.set(nuevaVentaLiqRef, {
+            tipoMovimiento: 'liquidacion_apartado',
+            apartadoId: String(ap.id),
+            clienteNombre: ap?.clienteNombre ?? 'Clienta',
+            esVentaAgrupada: true,
+            items: Array.isArray(ap?.items) ? ap.items : [],
+            productoNombre: `Liquidación Apartado - ${ap?.clienteNombre ?? 'Clienta'}`,
+            color: 'Saldo Final',
+            talla: 'Liquidado',
+            cantidad: Number(ap?.cantidadTotal ?? 1),
+            subtotal: saldoRestante,
+            descuento: 0,
+            total: saldoRestante,
+            costoTotal: costoProporcionalSaldo,
+            gananciaNeta: gananciaSaldoHoy,
+            metodoPago: liquidatePaymentMethod,
+            timestamp: serverTimestamp(),
+            fechaIso: ahora.toISOString(),
+            fechaLocal: fechaFormateada,
+          });
+        });
+      }
+
+      setSaleSuccessMessage(
+        `Apartado de ${ap?.clienteNombre} liquidado (+$${saldoRestante.toFixed(2)} en ${liquidatePaymentMethod})`
+      );
+      setTimeout(() => setSaleSuccessMessage(null), 4000);
+      setLiquidatingApartado(null);
+    } catch (err) {
+      alert('Error al liquidar el apartado: ' + (err?.message ?? 'Error desconocido'));
+    } finally {
+      setIsProcessingApartado(false);
+    }
+  };
+
+  // =========================================================
+  // 4. CANCELAR APARTADO (DEVOLVER PRENDAS AL STOCK)
+  // =========================================================
+  const handleCancelApartado = async (ap) => {
+    if (!ap ? true : isProcessingApartado) return;
+
+    const confirmar = window.confirm(
+      `¿Cancelar el apartado de "${ap?.clienteNombre ?? 'Clienta'}"? Las prendas se devolverán automáticamente al inventario (+stock) y se anulará el anticipo de la caja.`
+    );
+    if (!confirmar) return;
+
+    const ahora = new Date();
+    const fechaFormateada =
+      ahora.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' }) +
+      ' ' +
+      ahora.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    setIsProcessingApartado(true);
+    try {
+      const listaItems = Array.isArray(ap?.items) ? ap.items : [];
+      const restauracionesPorProdId = new Map();
+
+      for (const item of listaItems) {
+        const rawPid = item?.productId ? String(item.productId).trim() : '';
+        const nombreBuscado = String(item?.productoNombre ?? '').trim().toLowerCase();
+
+        const prodEncontrado = products.find((p) => {
+          if (!p) return false;
+          if (rawPid && p?.id && String(p.id) === rawPid) return true;
+          const nomP = String(p?.nombre ?? '').trim().toLowerCase();
+          return Boolean(nomP && nombreBuscado && nomP === nombreBuscado);
+        });
+
+        if (!prodEncontrado) continue;
+
+        const pidReal = String(prodEncontrado.id);
+        const variantesActuales = restauracionesPorProdId.has(pidReal)
+          ? restauracionesPorProdId.get(pidReal)
+          : Array.isArray(prodEncontrado?.variantes)
+          ? [...prodEncontrado.variantes]
+          : [];
+
+        const idxVar = variantesActuales.findIndex((v) => {
+          if (!v) return false;
+          if (v?.id && item?.variantId && String(v.id) === String(item.variantId)) return true;
+          const cV = String(v?.color ?? '').trim().toLowerCase();
+          const cI = String(item?.color ?? '').trim().toLowerCase();
+          const tV = String(v?.talla ?? '').trim().toLowerCase();
+          const tI = String(item?.talla ?? '').trim().toLowerCase();
+          if (cV && cI && cV === cI) {
+            return tI ? tV === tI : true;
+          }
+          return false;
+        });
+
+        if (idxVar !== -1) {
+          const cantDevolver = Math.max(1, Number(item?.cantidad ?? 1));
+          variantesActuales[idxVar] = {
+            ...variantesActuales[idxVar],
+            stock: Math.max(0, Number(variantesActuales[idxVar]?.stock ?? 0)) + cantDevolver,
+          };
+          restauracionesPorProdId.set(pidReal, variantesActuales);
+        }
+      }
+
+      if (user && isFirebaseConnected) {
+        for (const [pidReal, nuevasVars] of restauracionesPorProdId.entries()) {
+          if (!pidReal.startsWith('local-')) {
+            await updateDoc(doc(db, 'products', pidReal), { variantes: nuevasVars });
+          }
+        }
+
+        // Marcar apartado como cancelado
+        if (ap?.id && !String(ap.id).startsWith('local-')) {
+          await updateDoc(doc(db, 'apartados', String(ap.id)), {
+            estado: 'cancelado',
+            saldoPendiente: 0,
+            fechaCancelacionLocal: fechaFormateada,
+          });
+        }
+
+        // Eliminar el registro de seña de la colección sales para descontarlo de caja
+        const saleSenaId = ap?.saleSenaId ? String(ap.saleSenaId).trim() : '';
+        if (saleSenaId) {
+          await deleteDoc(doc(db, 'sales', saleSenaId));
+        }
+      }
+
+      setSaleSuccessMessage(
+        `Apartado de ${ap?.clienteNombre} cancelado. Stock restaurado al inventario.`
+      );
+      setTimeout(() => setSaleSuccessMessage(null), 4000);
+    } catch (err) {
+      alert('Error al cancelar el apartado: ' + (err?.message ?? 'Error desconocido'));
+    } finally {
+      setIsProcessingApartado(false);
+    }
+  };
+
+  // =========================================================
+  // ANULACIÓN SEGURA DE VENTA DESDE MÉTRICAS
   // =========================================================
   const handleAnnulSale = async (sale) => {
     if (!sale) return;
 
     const saleId = sale?.id ? String(sale.id).trim() : '';
+
+    // Si es una liquidación de apartado, solo anulamos ese cobro sin duplicar stock
+    if (sale?.tipoMovimiento === 'liquidacion_apartado') {
+      const confLiq = window.confirm(
+        `¿Anular el cobro de liquidación ($${Number(sale?.total ?? 0).toFixed(2)}) de ${sale?.clienteNombre ?? 'clienta'}?`
+      );
+      if (!confLiq) return;
+
+      setAnnulLoadingId(saleId ? saleId : 'temp-id');
+      try {
+        if (user && isFirebaseConnected && saleId) {
+          await deleteDoc(doc(db, 'sales', saleId));
+          if (sale?.apartadoId) {
+            await updateDoc(doc(db, 'apartados', String(sale.apartadoId)), {
+              estado: 'pendiente',
+              saldoPendiente: Number(sale?.total ?? 0),
+            });
+          }
+        }
+        setSales((prev) => prev.filter((s) => s?.id !== sale?.id));
+      } catch (err) {
+        alert('Error al anular liquidación: ' + (err?.message ?? 'Error'));
+      } finally {
+        setAnnulLoadingId(null);
+      }
+      return;
+    }
+
     const listaItemsVenta =
       Array.isArray(sale?.items) && sale.items.length > 0
         ? sale.items
@@ -694,7 +1133,6 @@ export default function App() {
     setAnnulLoadingId(saleId ? saleId : 'temp-id');
 
     try {
-      // Agrupar qué variantes se pueden restaurar en el inventario actual
       const restauracionesPorProdId = new Map();
       let algunItemEncontrado = false;
 
@@ -744,7 +1182,7 @@ export default function App() {
 
       if (algunItemEncontrado) {
         const confirmar = window.confirm(
-          `¿Anular este ticket por $${Number(sale?.total ?? 0).toFixed(2)} y devolver las prendas al inventario?`
+          `¿Anular este registro por $${Number(sale?.total ?? 0).toFixed(2)} y devolver las prendas al inventario?`
         );
         if (!confirmar) {
           setAnnulLoadingId(null);
@@ -756,6 +1194,12 @@ export default function App() {
             if (!pidReal.startsWith('local-')) {
               await updateDoc(doc(db, 'products', pidReal), { variantes: nuevasVars });
             }
+          }
+          if (sale?.tipoMovimiento === 'sena_apartado' && sale?.apartadoId) {
+            await updateDoc(doc(db, 'apartados', String(sale.apartadoId)), {
+              estado: 'cancelado',
+              saldoPendiente: 0,
+            });
           }
           if (saleId && !saleId.startsWith('local-')) {
             await deleteDoc(doc(db, 'sales', saleId));
@@ -829,7 +1273,7 @@ export default function App() {
       }
 
       if (dateRangeFilter === 'semana') {
-        const diaSemana = ahora.getDay(); // 0 domingo, 1 lunes...
+        const diaSemana = ahora.getDay();
         const diasDesdeLunes = diaSemana === 0 ? 6 : diaSemana - 1;
         const inicioSemana = new Date(
           ahora.getFullYear(),
@@ -907,11 +1351,13 @@ export default function App() {
     return { totalIngresos, gananciaNeta, porEfectivo, porQR };
   }, [filteredSales]);
 
-  // Top 5 Prendas Más Vendidas en el período seleccionado
+  // Top 5 Prendas Más Vendidas (ignora liquidaciones para no duplicar unidades ya contadas en la seña)
   const topSellingProducts = useMemo(() => {
     const prodMap = new Map();
 
     filteredSales.forEach((s) => {
+      if (s?.tipoMovimiento === 'liquidacion_apartado') return;
+
       const itemsList =
         Array.isArray(s?.items) && s.items.length > 0
           ? s.items
@@ -1162,7 +1608,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* NOTIFICACIÓN DE VENTA EXITOSA */}
+      {/* NOTIFICACIÓN DE ÉXITO */}
       {saleSuccessMessage && (
         <div className="max-w-md mx-auto w-full px-4 pt-3">
           <div className="bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 px-4 py-3 rounded-2xl flex items-center gap-3 text-base font-semibold shadow-lg">
@@ -1173,7 +1619,7 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* VISTA 1: VENDER (PUNTO DE VENTA CON CARRITO)              */}
+      {/* VISTA 1: VENDER (CON BLINDAJE DE STOCK EN CERO)           */}
       {/* ========================================================= */}
       {activeTab === 'vender' && (
         <main className="p-4 flex-1 flex flex-col gap-4 max-w-md mx-auto w-full pb-40">
@@ -1227,7 +1673,7 @@ export default function App() {
                     </span>
                   </div>
 
-                  {/* TARJETAS DE VARIANTES */}
+                  {/* TARJETAS DE VARIANTES CON BLINDAJE DE AGOTADOS */}
                   <div className="grid grid-cols-1 gap-2.5">
                     {(p?.variantes ?? []).map((v) => {
                       const stockDisp = Math.max(0, Number(v?.stock ?? 0));
@@ -1237,6 +1683,7 @@ export default function App() {
                         (item) => item.productId === p.id && item.variantId === v.id
                       );
                       const cantEnCarrito = enCarritoItem ? enCarritoItem.cantidad : 0;
+                      const topeEnCarrito = !agotado && cantEnCarrito >= stockDisp;
 
                       return (
                         <button
@@ -1246,9 +1693,9 @@ export default function App() {
                           onClick={() => handleAddToCart(p, v)}
                           className={`w-full text-left p-4 rounded-xl border transition-all flex flex-col gap-2 ${
                             agotado
-                              ? 'bg-slate-950/50 border-slate-800/60 opacity-50 cursor-not-allowed'
+                              ? 'bg-slate-950/40 border-slate-800/50 opacity-50 grayscale cursor-not-allowed'
                               : cantEnCarrito > 0
-                              ? 'bg-indigo-950/40 border-indigo-500 shadow-md'
+                              ? 'bg-indigo-950/40 border-indigo-500 shadow-md active:scale-[0.99]'
                               : 'bg-slate-950 hover:bg-slate-800/90 active:scale-[0.99] border-slate-800 hover:border-indigo-500/50 shadow-sm'
                           }`}
                         >
@@ -1266,15 +1713,19 @@ export default function App() {
                               </span>
                             </div>
 
-                            <span className="text-lg font-semibold text-emerald-400 shrink-0">
+                            <span
+                              className={`text-lg font-semibold shrink-0 ${
+                                agotado ? 'text-slate-500 line-through' : 'text-emerald-400'
+                              }`}
+                            >
                               ${Number(v?.precio ?? 0).toFixed(2)}
                             </span>
                           </div>
 
-                          <div className="flex items-center justify-between pt-1 border-t border-slate-900 text-xs">
+                          <div className="flex items-center justify-between pt-1.5 border-t border-slate-900 text-xs">
                             {agotado ? (
-                              <span className="text-rose-400 font-bold flex items-center gap-1.5">
-                                <AlertTriangle className="w-4 h-4" /> Agotado (0 un.)
+                              <span className="px-2.5 py-1 rounded-lg bg-rose-500/20 border border-rose-500/40 text-rose-400 font-extrabold tracking-wider uppercase">
+                                AGOTADO
                               </span>
                             ) : pocoStock ? (
                               <span className="text-amber-400 font-bold flex items-center gap-1.5">
@@ -1286,13 +1737,21 @@ export default function App() {
                               </span>
                             )}
 
-                            {cantEnCarrito > 0 ? (
+                            {agotado ? (
+                              <span className="text-slate-500 font-bold uppercase">
+                                No disponible
+                              </span>
+                            ) : topeEnCarrito ? (
+                              <span className="px-2.5 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 font-extrabold text-xs">
+                                Máx. en carrito ({cantEnCarrito} un.)
+                              </span>
+                            ) : cantEnCarrito > 0 ? (
                               <span className="px-2.5 py-0.5 rounded-full bg-indigo-600 text-white font-extrabold text-xs">
                                 En carrito: {cantEnCarrito} un. (+1)
                               </span>
                             ) : (
                               <span className="text-indigo-400 font-semibold">
-                                {agotado ? 'Sin stock' : '+ Añadir al carrito'}
+                                + Añadir al carrito
                               </span>
                             )}
                           </div>
@@ -1328,7 +1787,7 @@ export default function App() {
                   {(Number.isNaN(finalTotalToCharge) ? cartSubtotal : finalTotalToCharge).toFixed(2)}
                 </span>
                 <span className="text-xs text-indigo-200 font-medium block">
-                  Toca para revisar o cobrar
+                  Toca para cobrar o apartar con seña
                 </span>
               </div>
             </div>
@@ -1341,7 +1800,195 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* VISTA 2: INVENTARIO                                       */}
+      {/* VISTA 2: APARTADOS / RESERVAS (SEÑAS Y SALDOS PENDIENTES) */}
+      {/* ========================================================= */}
+      {activeTab === 'apartados' && (
+        <main className="p-4 flex-1 flex flex-col gap-5 max-w-md mx-auto w-full pb-36">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-xl font-bold text-white">Apartados y Reservas</h2>
+              <p className="text-sm text-slate-400">
+                Control de señas, prendas separadas y saldos por cobrar.
+              </p>
+            </div>
+            <span className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 font-extrabold text-sm">
+              {pendingApartadosCount} Activos
+            </span>
+          </div>
+
+          {/* FILTRO DE ESTADO DE APARTADOS */}
+          <div className="grid grid-cols-3 gap-2">
+            {[
+              { id: 'pendiente', label: 'Pendientes' },
+              { id: 'completado', label: 'Completados' },
+              { id: 'cancelado', label: 'Cancelados' },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setApartadosFilter(tab.id)}
+                className={`h-11 rounded-xl font-bold text-sm border transition-all ${
+                  apartadosFilter === tab.id
+                    ? 'bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-600/30'
+                    : 'bg-slate-900 text-slate-300 border-slate-800 hover:bg-slate-800'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {/* LISTA DE APARTADOS */}
+          <div className="flex flex-col gap-4">
+            {filteredApartados.length === 0 ? (
+              <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-8 text-center text-slate-400 text-base">
+                {apartadosFilter === 'pendiente'
+                  ? 'No hay apartados pendientes por cobrar. Para crear uno, agrega prendas al carrito en "Vender" y elige "Apartar con Seña".'
+                  : `No hay apartados en estado "${apartadosFilter}".`}
+              </div>
+            ) : (
+              filteredApartados.map((ap) => {
+                const esPendiente = (ap?.estado ?? 'pendiente') === 'pendiente';
+                const esCompletado = ap?.estado === 'completado';
+                const listaPrendas = Array.isArray(ap?.items) ? ap.items : [];
+
+                return (
+                  <div
+                    key={ap.id}
+                    className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col gap-4 shadow-md"
+                  >
+                    {/* Encabezado: Clienta y Fecha */}
+                    <div className="flex justify-between items-start gap-2 border-b border-slate-800 pb-3">
+                      <div>
+                        <span className="text-xs font-bold uppercase tracking-wider text-indigo-400 block">
+                          Clienta
+                        </span>
+                        <h3 className="text-xl font-bold text-white leading-snug">
+                          {ap?.clienteNombre ?? 'Clienta'}
+                        </h3>
+                        {ap?.clienteTelefono && (
+                          <span className="text-sm text-emerald-400 font-semibold block mt-0.5">
+                            Tel / WhatsApp: {ap.clienteTelefono}
+                          </span>
+                        )}
+                        <span className="text-xs text-slate-400 block mt-1">
+                          Fecha apartado: {ap?.fechaLocal ?? ''}
+                        </span>
+                      </div>
+
+                      <span
+                        className={`px-3 py-1 rounded-xl text-xs font-extrabold uppercase tracking-wider border ${
+                          esPendiente
+                            ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+                            : esCompletado
+                            ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+                            : 'bg-rose-500/15 text-rose-300 border-rose-500/40'
+                        }`}
+                      >
+                        {esPendiente ? 'Pendiente' : esCompletado ? 'Liquidado' : 'Cancelado'}
+                      </span>
+                    </div>
+
+                    {/* Prendas reservadas */}
+                    <div className="flex flex-col gap-2">
+                      <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                        Prendas Reservadas ({ap?.cantidadTotal ?? listaPrendas.length} un.)
+                      </span>
+                      {listaPrendas.map((item, idx) => (
+                        <div
+                          key={idx}
+                          className="bg-slate-950 border border-slate-800/80 rounded-xl p-3 flex items-center justify-between gap-2"
+                        >
+                          <div>
+                            <h4 className="text-base font-bold text-white leading-snug">
+                              {item?.productoNombre ?? 'Prenda'}
+                            </h4>
+                            <div className="flex items-center gap-2 mt-1 flex-wrap">
+                              <span
+                                className="w-4 h-4 rounded-full border shrink-0"
+                                style={getColorSwatchStyle(item?.color)}
+                              />
+                              <span className="text-sm font-bold text-slate-200">
+                                {item?.color ?? 'General'}
+                              </span>
+                              <span className="text-xs text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                                Talla: {item?.talla ?? 'Única'}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="text-right shrink-0">
+                            <span className="text-sm font-extrabold text-white bg-indigo-600/20 border border-indigo-500/30 px-2.5 py-0.5 rounded-lg inline-block">
+                              x{item?.cantidad ?? 1}
+                            </span>
+                            <span className="text-xs text-slate-400 block mt-1">
+                              ${Number(item?.subtotalItem ?? item?.precioUnitario ?? 0).toFixed(2)}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Resumen Financiero: Total, Pagado y Pendiente */}
+                    <div className="grid grid-cols-3 gap-2 bg-slate-950 border border-slate-800 rounded-xl p-3 text-center">
+                      <div>
+                        <span className="text-xs text-slate-400 block">Total</span>
+                        <span className="text-base font-extrabold text-white mt-0.5 block">
+                          ${Number(ap?.totalPedido ?? 0).toFixed(2)}
+                        </span>
+                      </div>
+                      <div className="border-x border-slate-800 px-1">
+                        <span className="text-xs text-slate-400 block">Pagado</span>
+                        <span className="text-base font-extrabold text-emerald-400 mt-0.5 block">
+                          ${Number(ap?.montoPagado ?? 0).toFixed(2)}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-xs text-slate-400 block">Pendiente</span>
+                        <span className="text-base font-extrabold text-amber-400 mt-0.5 block">
+                          ${Number(ap?.saldoPendiente ?? 0).toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Botones de Acción para Apartados Pendientes */}
+                    {esPendiente && (
+                      <div className="flex flex-col gap-2.5 pt-1">
+                        <button
+                          type="button"
+                          disabled={isProcessingApartado}
+                          onClick={() => {
+                            setLiquidatePaymentMethod('Efectivo');
+                            setLiquidatingApartado(ap);
+                          }}
+                          className="w-full h-14 bg-emerald-600 hover:bg-emerald-500 active:scale-[0.99] text-white rounded-xl font-extrabold text-base flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/25 transition-all"
+                        >
+                          <CheckCircle className="w-5 h-5" />
+                          Completar / Liquidar ($
+                          {Number(ap?.saldoPendiente ?? 0).toFixed(2)})
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={isProcessingApartado}
+                          onClick={() => handleCancelApartado(ap)}
+                          className="w-full h-12 bg-rose-500/10 hover:bg-rose-500/20 active:scale-[0.99] border border-rose-500/30 text-rose-300 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                          Cancelar Apartado y Devolver Stock
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </main>
+      )}
+
+      {/* ========================================================= */}
+      {/* VISTA 3: INVENTARIO (CON BADGE "AGOTADO" EN CERO)         */}
       {/* ========================================================= */}
       {activeTab === 'inventario' && (
         <main className="p-4 flex-1 flex flex-col gap-5 max-w-md mx-auto w-full pb-36">
@@ -1417,7 +2064,9 @@ export default function App() {
                       return (
                         <div
                           key={v.id}
-                          className="p-3.5 rounded-xl bg-slate-950 border border-slate-800/90 flex flex-col gap-2"
+                          className={`p-3.5 rounded-xl bg-slate-950 border border-slate-800/90 flex flex-col gap-2 ${
+                            agotado ? 'opacity-60 grayscale' : ''
+                          }`}
                         >
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2.5 flex-wrap">
@@ -1444,8 +2093,8 @@ export default function App() {
                             </span>
 
                             {agotado ? (
-                              <span className="px-2.5 py-0.5 rounded-lg bg-rose-500/15 text-rose-400 border border-rose-500/30 font-bold">
-                                Agotado: 0 un.
+                              <span className="px-2.5 py-0.5 rounded-lg bg-rose-500/20 text-rose-400 border border-rose-500/40 font-extrabold uppercase tracking-wider">
+                                AGOTADO
                               </span>
                             ) : pocoStock ? (
                               <span className="px-2.5 py-0.5 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/30 font-bold">
@@ -1469,7 +2118,7 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* VISTA 3: MÉTRICAS, FILTRO DE FECHAS Y TOP 5 MÁS VENDIDAS  */}
+      {/* VISTA 4: MÉTRICAS, FILTRO DE FECHAS Y TOP 5 MÁS VENDIDAS  */}
       {/* ========================================================= */}
       {activeTab === 'metricas' && (
         <main className="p-4 flex-1 flex flex-col gap-5 max-w-md mx-auto w-full pb-36">
@@ -1511,7 +2160,6 @@ export default function App() {
               Rango de Fecha Personalizado (Desde / Hasta)
             </button>
 
-            {/* SELECTOR DE FECHA PERSONALIZADA */}
             {dateRangeFilter === 'personalizado' && (
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 grid grid-cols-2 gap-3">
                 <div>
@@ -1543,7 +2191,7 @@ export default function App() {
           {/* TARJETAS DE VENTAS TOTALES Y GANANCIA NETA */}
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-              <span className="text-sm text-slate-400 font-semibold block">Ventas Totales</span>
+              <span className="text-sm text-slate-400 font-semibold block">Ingresos en Caja</span>
               <span className="text-2xl font-extrabold text-emerald-400 mt-1 block">
                 ${metrics.totalIngresos.toFixed(2)}
               </span>
@@ -1648,7 +2296,6 @@ export default function App() {
                         </span>
                       </div>
 
-                      {/* Barra de progreso de volumen relativo */}
                       <div className="w-full h-2.5 bg-slate-900 rounded-full overflow-hidden mt-1">
                         <div
                           className="h-full bg-gradient-to-r from-indigo-500 to-emerald-400 rounded-full transition-all"
@@ -1666,7 +2313,7 @@ export default function App() {
           <div className="flex flex-col gap-3">
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-bold text-white">
-                Historial de Ventas ({filteredSales.length})
+                Movimientos de Caja ({filteredSales.length})
               </h3>
             </div>
 
@@ -1676,6 +2323,8 @@ export default function App() {
               </div>
             ) : (
               filteredSales.map((s) => {
+                const esSena = s?.tipoMovimiento === 'sena_apartado';
+                const esLiquidacion = s?.tipoMovimiento === 'liquidacion_apartado';
                 const itemsTicket =
                   Array.isArray(s?.items) && s.items.length > 0
                     ? s.items
@@ -1695,19 +2344,30 @@ export default function App() {
                     key={s.id}
                     className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col gap-3"
                   >
-                    {/* Cabecera del Ticket */}
                     <div className="flex justify-between items-start border-b border-slate-800 pb-2.5">
                       <div>
-                        <span className="text-xs font-bold uppercase tracking-wider text-indigo-400 block">
-                          Pago: {s?.metodoPago ?? 'Efectivo'}
-                        </span>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-xs font-bold uppercase tracking-wider text-indigo-400">
+                            Pago: {s?.metodoPago ?? 'Efectivo'}
+                          </span>
+                          {esSena && (
+                            <span className="px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[11px] font-bold">
+                              Seña Apartado ({s?.clienteNombre ?? 'Clienta'})
+                            </span>
+                          )}
+                          {esLiquidacion && (
+                            <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[11px] font-bold">
+                              Liquidación Apartado ({s?.clienteNombre ?? 'Clienta'})
+                            </span>
+                          )}
+                        </div>
                         <span className="text-xs text-slate-400 block mt-0.5">
                           {s?.fechaLocal ?? ''}
                         </span>
                       </div>
                       <div className="text-right">
                         <span className="text-xl font-extrabold text-emerald-400 block">
-                          ${Number(s?.total ?? 0).toFixed(2)}
+                          +${Number(s?.total ?? 0).toFixed(2)}
                         </span>
                         {Number(s?.descuento ?? 0) > 0 && (
                           <span className="text-xs text-amber-400 font-semibold block">
@@ -1717,7 +2377,6 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Desglose de prendas vendidas en este ticket */}
                     <div className="flex flex-col gap-2">
                       {itemsTicket.map((item, idx) => (
                         <div
@@ -1763,7 +2422,7 @@ export default function App() {
                       <Trash2 className="w-4 h-4" />
                       {annulLoadingId === s?.id
                         ? 'Procesando anulación...'
-                        : 'Anular venta y restaurar stock'}
+                        : 'Anular registro y restaurar stock'}
                     </button>
                   </div>
                 );
@@ -1805,10 +2464,12 @@ export default function App() {
               </button>
             </div>
 
-            {/* LISTA DE ARTÍCULOS EN EL CARRITO */}
-            <div className="flex flex-col gap-3 max-h-64 overflow-y-auto pr-1">
+            {/* LISTA DE ARTÍCULOS EN EL CARRITO CON VALIDACIÓN DEL BOTÓN "+" */}
+            <div className="flex flex-col gap-3 max-h-60 overflow-y-auto pr-1">
               {cart.map((item) => {
                 const maxDisp = getLiveStock(item.productId, item.variantId, item.stockMax);
+                const alcanzoStockMaximo = item.cantidad >= maxDisp;
+
                 return (
                   <div
                     key={item.productId + '-' + item.variantId}
@@ -1846,14 +2507,14 @@ export default function App() {
                     <div className="flex items-center justify-between pt-2 border-t border-slate-900">
                       <div>
                         <span className="text-xs text-slate-400 block">
-                          Unitario: ${item.precioUnitario.toFixed(2)} (Máx: {maxDisp})
+                          Unitario: ${item.precioUnitario.toFixed(2)} (Stock máx: {maxDisp})
                         </span>
                         <span className="text-base font-extrabold text-emerald-400">
                           Subtotal: ${(item.precioUnitario * item.cantidad).toFixed(2)}
                         </span>
                       </div>
 
-                      {/* Controles rápidos - / + */}
+                      {/* Controles rápidos - / + con bloqueo en stock máximo */}
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
@@ -1869,10 +2530,20 @@ export default function App() {
                         </span>
                         <button
                           type="button"
+                          disabled={alcanzoStockMaximo}
                           onClick={() =>
                             handleUpdateCartQty(item.productId, item.variantId, 1)
                           }
-                          className="w-10 h-10 bg-indigo-600 active:bg-indigo-500 rounded-xl text-lg font-bold text-white flex items-center justify-center"
+                          className={`w-10 h-10 rounded-xl text-lg font-bold flex items-center justify-center transition-all ${
+                            alcanzoStockMaximo
+                              ? 'bg-slate-800 text-slate-500 opacity-40 cursor-not-allowed border border-slate-700'
+                              : 'bg-indigo-600 active:bg-indigo-500 text-white'
+                          }`}
+                          title={
+                            alcanzoStockMaximo
+                              ? 'Alcanzaste el límite de stock disponible'
+                              : 'Sumar 1 unidad'
+                          }
                         >
                           +
                         </button>
@@ -1938,7 +2609,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* SELECTOR EXCLUSIVO DE MÉTODO DE PAGO: EFECTIVO Y QR / TRANSF. */}
+            {/* SELECTOR EXCLUSIVO DE MÉTODO DE PAGO */}
             <div>
               <label className="text-sm font-semibold text-slate-300 block mb-2">
                 Método de Pago
@@ -1949,7 +2620,7 @@ export default function App() {
                     key={metodo}
                     type="button"
                     onClick={() => setPaymentMethod(metodo)}
-                    className={`h-14 rounded-xl font-extrabold text-base border transition-all ${
+                    className={`h-12 rounded-xl font-extrabold text-base border transition-all ${
                       paymentMethod === metodo
                         ? 'bg-indigo-600 text-white border-indigo-400 shadow-lg shadow-indigo-600/30'
                         : 'bg-slate-950 text-slate-300 border-slate-800'
@@ -1961,7 +2632,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* BOTONES DE CONFIRMACIÓN */}
+            {/* BOTONES DE ACCIÓN: COBRAR TOTAL O APARTAR CON SEÑA */}
             <div className="flex flex-col gap-2.5 pt-1">
               <button
                 type="button"
@@ -1975,14 +2646,250 @@ export default function App() {
               >
                 {isProcessingSale
                   ? 'Procesando Venta...'
-                  : `Cobrar $${(Number.isNaN(finalTotalToCharge) ? 0 : finalTotalToCharge).toFixed(2)}`}
+                  : `Cobrar Total $${(Number.isNaN(finalTotalToCharge) ? 0 : finalTotalToCharge).toFixed(2)}`}
               </button>
+
+              <button
+                type="button"
+                disabled={isProcessingSale ? true : !isCartTotalValid}
+                onClick={handleOpenLayawayModal}
+                className={`w-full h-13 py-3 rounded-xl text-base font-extrabold border transition-all flex items-center justify-center gap-2 ${
+                  isCartTotalValid && !isProcessingSale
+                    ? 'bg-amber-500/15 hover:bg-amber-500/25 border-amber-500/40 text-amber-300 active:scale-[0.99]'
+                    : 'bg-slate-800 text-slate-500 border-slate-700 cursor-not-allowed opacity-50'
+                }`}
+              >
+                <Tag className="w-5 h-5" />
+                Apartar con Seña (Reserva)
+              </button>
+
               <button
                 type="button"
                 onClick={() => setIsCartOpen(false)}
-                className="w-full h-12 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-base font-semibold"
+                className="w-full h-11 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-sm font-semibold"
               >
                 Seguir agregando prendas
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL DE NUEVO APARTADO CON SEÑA                          */}
+      {/* ========================================================= */}
+      {isLayawayModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm flex items-center justify-center p-3 overflow-y-auto">
+          <div className="bg-slate-900 border border-amber-500/40 rounded-2xl w-full max-w-md p-5 shadow-2xl flex flex-col gap-4 my-auto max-h-[92vh] overflow-y-auto">
+            <div className="border-b border-slate-800 pb-3">
+              <span className="text-xs font-extrabold uppercase tracking-wider text-amber-400">
+                Reserva de Mercadería
+              </span>
+              <h3 className="text-xl font-bold text-white mt-0.5">
+                Apartar con Seña
+              </h3>
+              <p className="text-xs text-slate-400 mt-1">
+                Las prendas se descontarán del inventario inmediatamente y la seña sumará a la caja de hoy.
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-3">
+              <div>
+                <label className="text-sm font-semibold text-slate-300 block mb-1">
+                  Nombre de la Clienta *
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ej: María Gómez"
+                  value={layawayClientName}
+                  onChange={(e) => setLayawayClientName(e.target.value)}
+                  className="w-full h-12 bg-slate-950 border border-slate-700 focus:border-amber-500 rounded-xl px-3.5 text-base text-white font-semibold outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="text-sm font-semibold text-slate-300 block mb-1">
+                  Teléfono / WhatsApp (Opcional)
+                </label>
+                <input
+                  type="tel"
+                  placeholder="Ej: 70012345"
+                  value={layawayClientPhone}
+                  onChange={(e) => setLayawayClientPhone(e.target.value)}
+                  className="w-full h-12 bg-slate-950 border border-slate-700 rounded-xl px-3.5 text-base text-white outline-none"
+                />
+              </div>
+
+              {/* Resumen del Pedido y Seña */}
+              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 flex flex-col gap-3 mt-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-slate-400 font-semibold">
+                    Total del Pedido ({cartTotalItems} art.):
+                  </span>
+                  <span className="text-lg font-extrabold text-white">
+                    ${layawayOrderTotal.toFixed(2)}
+                  </span>
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold uppercase tracking-wider text-amber-300 block mb-1.5">
+                    Monto de la Seña / Anticipo Pagado Hoy ($) *
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    max={layawayOrderTotal}
+                    placeholder="0.00"
+                    value={layawayDepositInput}
+                    onChange={(e) => setLayawayDepositInput(e.target.value)}
+                    className="w-full h-14 bg-slate-900 border border-amber-500/60 rounded-xl px-4 text-2xl font-extrabold text-emerald-400 text-center outline-none"
+                  />
+                  {(!Number.isNaN(parsedLayawayDeposit) &&
+                    parsedLayawayDeposit >= layawayOrderTotal) && (
+                    <span className="text-xs text-rose-400 font-semibold block mt-1 text-center">
+                      La seña debe ser menor al total (si paga todo, usa "Cobrar Total").
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex justify-between items-center pt-2 border-t border-slate-800">
+                  <span className="text-sm font-bold text-slate-300">
+                    Saldo Pendiente por Pagar:
+                  </span>
+                  <span className="text-xl font-extrabold text-amber-400">
+                    ${layawayPendingBalance.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Método de pago del anticipo */}
+              <div>
+                <label className="text-sm font-semibold text-slate-300 block mb-2">
+                  Método de Pago de la Seña
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  {['Efectivo', 'QR / Transf.'].map((metodo) => (
+                    <button
+                      key={metodo}
+                      type="button"
+                      onClick={() => setLayawayPaymentMethod(metodo)}
+                      className={`h-12 rounded-xl font-extrabold text-base border transition-all ${
+                        layawayPaymentMethod === metodo
+                          ? 'bg-indigo-600 text-white border-indigo-400 shadow-lg shadow-indigo-600/30'
+                          : 'bg-slate-950 text-slate-300 border-slate-800'
+                      }`}
+                    >
+                      {metodo}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2.5 pt-2">
+              <button
+                type="button"
+                disabled={isProcessingApartado ? true : !isLayawayFormValid}
+                onClick={handleConfirmLayaway}
+                className={`w-full h-14 rounded-xl text-base font-extrabold transition-all ${
+                  isLayawayFormValid && !isProcessingApartado
+                    ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-lg shadow-amber-500/25 active:scale-[0.99]'
+                    : 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-60'
+                }`}
+              >
+                {isProcessingApartado
+                  ? 'Guardando Apartado...'
+                  : `Confirmar Apartado (Cobrar Seña $${(Number.isNaN(parsedLayawayDeposit) ? 0 : parsedLayawayDeposit).toFixed(2)})`}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsLayawayModalOpen(false)}
+                className="w-full h-12 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-base font-semibold"
+              >
+                Volver al Carrito
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL PARA LIQUIDAR / COMPLETAR APARTADO                  */}
+      {/* ========================================================= */}
+      {liquidatingApartado && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-emerald-500/40 rounded-2xl w-full max-w-md p-5 shadow-2xl flex flex-col gap-4 my-auto">
+            <div className="border-b border-slate-800 pb-3">
+              <span className="text-xs font-extrabold uppercase tracking-wider text-emerald-400">
+                Liquidar Saldo Restante
+              </span>
+              <h3 className="text-xl font-bold text-white mt-0.5">
+                {liquidatingApartado?.clienteNombre ?? 'Clienta'}
+              </h3>
+            </div>
+
+            <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 flex flex-col gap-2.5">
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-400">Total del Pedido:</span>
+                <span className="font-bold text-white">
+                  ${Number(liquidatingApartado?.totalPedido ?? 0).toFixed(2)}
+                </span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-400">Seña Pagada Anteriormente:</span>
+                <span className="font-bold text-emerald-400">
+                  -${Number(liquidatingApartado?.montoPagado ?? 0).toFixed(2)}
+                </span>
+              </div>
+              <div className="flex justify-between items-center pt-2 border-t border-slate-800">
+                <span className="text-base font-bold text-white">Saldo a Cobrar Hoy:</span>
+                <span className="text-2xl font-extrabold text-amber-400">
+                  ${Number(liquidatingApartado?.saldoPendiente ?? 0).toFixed(2)}
+                </span>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-sm font-semibold text-slate-300 block mb-2">
+                Método de Pago del Saldo Final
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                {['Efectivo', 'QR / Transf.'].map((metodo) => (
+                  <button
+                    key={metodo}
+                    type="button"
+                    onClick={() => setLiquidatePaymentMethod(metodo)}
+                    className={`h-14 rounded-xl font-extrabold text-base border transition-all ${
+                      liquidatePaymentMethod === metodo
+                        ? 'bg-indigo-600 text-white border-indigo-400 shadow-lg shadow-indigo-600/30'
+                        : 'bg-slate-950 text-slate-300 border-slate-800'
+                    }`}
+                  >
+                    {metodo}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2.5 pt-2">
+              <button
+                type="button"
+                disabled={isProcessingApartado}
+                onClick={handleConfirmLiquidateApartado}
+                className="w-full h-14 bg-emerald-600 hover:bg-emerald-500 active:scale-[0.99] text-white rounded-xl text-lg font-extrabold shadow-lg shadow-emerald-600/30"
+              >
+                {isProcessingApartado
+                  ? 'Registrando Cobro...'
+                  : `Confirmar Cobro ($${Number(liquidatingApartado?.saldoPendiente ?? 0).toFixed(2)})`}
+              </button>
+              <button
+                type="button"
+                onClick={() => setLiquidatingApartado(null)}
+                className="w-full h-12 bg-slate-800 text-slate-300 rounded-xl text-base font-semibold"
+              >
+                Cancelar
               </button>
             </div>
           </div>
@@ -2384,7 +3291,7 @@ export default function App() {
                             value={v.costo}
                             onChange={(e) => {
                               const copia = [...newVariants];
-                              copia[idx] = { ...copia[idx], costo: e.target.value };
+                              copia[idx] = { ...copia[idx], costo: parseFloat(e.target.value) };
                               setNewVariants(copia);
                             }}
                             className="w-full h-12 bg-slate-900 border border-slate-700 rounded-xl px-2.5 text-base text-white font-semibold"
@@ -2415,7 +3322,7 @@ export default function App() {
                             value={v.stock}
                             onChange={(e) => {
                               const copia = [...newVariants];
-                              copia[idx] = { ...copia[idx], stock: e.target.value };
+                              copia[idx] = { ...copia[idx], stock: parseInt(e.target.value, 10) };
                               setNewVariants(copia);
                             }}
                             className="w-full h-12 bg-slate-900 border border-slate-700 rounded-xl px-2.5 text-base text-white font-bold text-center"
@@ -2470,14 +3377,14 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* BARRA DE NAVEGACIÓN INFERIOR                              */}
+      {/* BARRA DE NAVEGACIÓN INFERIOR (4 PESTAÑAS INCL. APARTADOS) */}
       {/* ========================================================= */}
       <nav className="fixed bottom-0 left-0 right-0 z-30 bg-slate-900/95 backdrop-blur-md border-t border-slate-800">
-        <div className="max-w-md mx-auto grid grid-cols-3 gap-1 p-2">
+        <div className="max-w-md mx-auto grid grid-cols-4 gap-1 p-2">
           <button
             type="button"
             onClick={() => setActiveTab('vender')}
-            className={`h-14 rounded-xl flex flex-col items-center justify-center gap-1 font-bold text-sm transition-all ${
+            className={`h-14 rounded-xl flex flex-col items-center justify-center gap-1 font-bold text-xs transition-all ${
               activeTab === 'vender'
                 ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/30'
                 : 'text-slate-400 hover:text-slate-200'
@@ -2489,8 +3396,26 @@ export default function App() {
 
           <button
             type="button"
+            onClick={() => setActiveTab('apartados')}
+            className={`relative h-14 rounded-xl flex flex-col items-center justify-center gap-1 font-bold text-xs transition-all ${
+              activeTab === 'apartados'
+                ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Tag className="w-5 h-5" />
+            <span>Apartados</span>
+            {pendingApartadosCount > 0 && (
+              <span className="absolute top-1.5 right-3 bg-amber-500 text-slate-950 font-extrabold text-[10px] w-4 h-4 rounded-full flex items-center justify-center">
+                {pendingApartadosCount}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab('inventario')}
-            className={`h-14 rounded-xl flex flex-col items-center justify-center gap-1 font-bold text-sm transition-all ${
+            className={`h-14 rounded-xl flex flex-col items-center justify-center gap-1 font-bold text-xs transition-all ${
               activeTab === 'inventario'
                 ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/30'
                 : 'text-slate-400 hover:text-slate-200'
@@ -2503,7 +3428,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => setActiveTab('metricas')}
-            className={`h-14 rounded-xl flex flex-col items-center justify-center gap-1 font-bold text-sm transition-all ${
+            className={`h-14 rounded-xl flex flex-col items-center justify-center gap-1 font-bold text-xs transition-all ${
               activeTab === 'metricas'
                 ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/30'
                 : 'text-slate-400 hover:text-slate-200'
