@@ -218,6 +218,19 @@ export default function App() {
     return { backgroundColor: '#64748b', borderColor: '#94a3b8' };
   };
 
+  // Estilos reutilizables con soporte de safe-area para móviles
+  const mainViewPaddingStyle = {
+    paddingBottom: 'max(7.5rem, calc(env(safe-area-inset-bottom, 0px) + 5.5rem))',
+  };
+
+  const venderViewWithCartPaddingStyle = {
+    paddingBottom: 'max(12rem, calc(env(safe-area-inset-bottom, 0px) + 10rem))',
+  };
+
+  const modalSafeBottomStyle = {
+    paddingBottom: 'max(8rem, calc(env(safe-area-inset-bottom, 0px) + 5rem))',
+  };
+
   const [activeTab, setActiveTab] = useState('vender');
   const [user, setUser] = useState(null);
   const [isFirebaseConnected, setIsFirebaseConnected] = useState(false);
@@ -249,7 +262,7 @@ export default function App() {
   const [layawayClientPhone, setLayawayClientPhone] = useState('');
   const [layawayDepositInput, setLayawayDepositInput] = useState('');
   const [layawayPaymentMethod, setLayawayPaymentMethod] = useState('Efectivo');
-  const [apartadosFilter, setApartadosFilter] = useState('pendiente'); // 'pendiente', 'completado', 'cancelado'
+  const [apartadosFilter, setApartadosFilter] = useState('pendiente');
   const [liquidatingApartado, setLiquidatingApartado] = useState(null);
   const [liquidatePaymentMethod, setLiquidatePaymentMethod] = useState('Efectivo');
   const [isProcessingApartado, setIsProcessingApartado] = useState(false);
@@ -297,7 +310,7 @@ export default function App() {
     return () => unsubscribeAuth();
   }, []);
 
-  // Sincronización en tiempo real con Firestore (Products, Sales y Apartados)
+  // Sincronización en tiempo real con Firestore
   useEffect(() => {
     if (!user ? true : !db) return;
 
@@ -397,7 +410,7 @@ export default function App() {
     }, 0);
   }, [products]);
 
-  // Conteo de apartados pendientes para el badge de navegación
+  // Conteo de apartados pendientes
   const pendingApartadosCount = useMemo(() => {
     return apartados.filter((a) => (a?.estado ?? 'pendiente') === 'pendiente').length;
   }, [apartados]);
@@ -450,7 +463,7 @@ export default function App() {
     return cart.length > 0 && !Number.isNaN(finalTotalToCharge) && finalTotalToCharge > 0;
   }, [cart.length, finalTotalToCharge]);
 
-  // Cálculos automáticos para el Modal de Apartado con Seña
+  // Cálculos para el Modal de Apartado con Seña
   const parsedLayawayDeposit = useMemo(() => {
     const texto = String(layawayDepositInput ?? '').trim();
     if (!texto) return NaN;
@@ -475,7 +488,7 @@ export default function App() {
     return cart.length > 0 && tieneNombre && senaValida;
   }, [cart.length, layawayClientName, parsedLayawayDeposit, layawayOrderTotal]);
 
-  // Añadir variante al carrito (bloqueado si stock <= 0 o si ya alcanzó el máximo disponible)
+  // Añadir variante al carrito
   const handleAddToCart = (product, variant) => {
     const stockDisp = Math.max(0, Number(variant?.stock ?? 0));
     if (stockDisp <= 0) {
@@ -726,7 +739,7 @@ export default function App() {
   };
 
   // =========================================================
-  // 2. CREAR APARTADO CON SEÑA (DESCUENTA STOCK Y SUMA SEÑA A CAJA)
+  // 2. CREAR APARTADO CON SEÑA
   // =========================================================
   const handleOpenLayawayModal = () => {
     if (!isCartTotalValid) {
@@ -755,7 +768,6 @@ export default function App() {
         .reduce((acc, item) => acc + Number(item.costoUnitario ?? 0) * Number(item.cantidad ?? 1), 0)
         .toFixed(2)
     );
-    // Costo proporcional a la seña cobrada hoy para que la ganancia del día sea exacta
     const proporcionSena = totalPedido > 0 ? montoSena / totalPedido : 0;
     const costoProporcionalSena = Number((costoTotalPedido * proporcionSena).toFixed(2));
     const gananciaSenaHoy = Number((montoSena - costoProporcionalSena).toFixed(2));
@@ -837,12 +849,10 @@ export default function App() {
             actualizacionesPendientes.push({ prodRef, listaVariantes });
           }
 
-          // 1. Descontar stock de Firestore inmediatamente
           for (const act of actualizacionesPendientes) {
             transaction.update(act.prodRef, { variantes: act.listaVariantes });
           }
 
-          // 2. Crear referencias de Apartado y de Ingreso de Seña en Caja
           const nuevoApartadoRef = doc(collection(db, 'apartados'));
           const nuevaVentaSenaRef = doc(collection(db, 'sales'));
 
@@ -863,7 +873,6 @@ export default function App() {
             fechaLocal: fechaFormateada,
           });
 
-          // 3. Registrar la seña cobrada hoy en la caja del día
           transaction.set(nuevaVentaSenaRef, {
             tipoMovimiento: 'sena_apartado',
             apartadoId: nuevoApartadoRef.id,
@@ -909,7 +918,7 @@ export default function App() {
   };
 
   // =========================================================
-  // 3. LIQUIDAR / COMPLETAR APARTADO (COBRAR SALDO RESTANTE)
+  // 3. LIQUIDAR / COMPLETAR APARTADO
   // =========================================================
   const handleConfirmLiquidateApartado = async () => {
     if (!liquidatingApartado ? true : isProcessingApartado) return;
@@ -919,7 +928,6 @@ export default function App() {
     const totalPedido = Math.max(0, Number(ap?.totalPedido ?? 0));
     const costoTotalPedido = Math.max(0, Number(ap?.costoTotalPedido ?? 0));
 
-    // Costo restante proporcional al saldo liquidado hoy
     const proporcionSaldo = totalPedido > 0 ? saldoRestante / totalPedido : 0;
     const costoProporcionalSaldo = Number((costoTotalPedido * proporcionSaldo).toFixed(2));
     const gananciaSaldoHoy = Number((saldoRestante - costoProporcionalSaldo).toFixed(2));
@@ -946,7 +954,6 @@ export default function App() {
             fechaLiquidacionLocal: fechaFormateada,
           });
 
-          // Sumar el saldo restante a la caja del día actual (sin volver a tocar stock)
           transaction.set(nuevaVentaLiqRef, {
             tipoMovimiento: 'liquidacion_apartado',
             apartadoId: String(ap.id),
@@ -1054,7 +1061,6 @@ export default function App() {
           }
         }
 
-        // Marcar apartado como cancelado
         if (ap?.id && !String(ap.id).startsWith('local-')) {
           await updateDoc(doc(db, 'apartados', String(ap.id)), {
             estado: 'cancelado',
@@ -1063,7 +1069,6 @@ export default function App() {
           });
         }
 
-        // Eliminar el registro de seña de la colección sales para descontarlo de caja
         const saleSenaId = ap?.saleSenaId ? String(ap.saleSenaId).trim() : '';
         if (saleSenaId) {
           await deleteDoc(doc(db, 'sales', saleSenaId));
@@ -1089,7 +1094,6 @@ export default function App() {
 
     const saleId = sale?.id ? String(sale.id).trim() : '';
 
-    // Si es una liquidación de apartado, solo anulamos ese cobro sin duplicar stock
     if (sale?.tipoMovimiento === 'liquidacion_apartado') {
       const confLiq = window.confirm(
         `¿Anular el cobro de liquidación ($${Number(sale?.total ?? 0).toFixed(2)}) de ${sale?.clienteNombre ?? 'clienta'}?`
@@ -1351,7 +1355,7 @@ export default function App() {
     return { totalIngresos, gananciaNeta, porEfectivo, porQR };
   }, [filteredSales]);
 
-  // Top 5 Prendas Más Vendidas (ignora liquidaciones para no duplicar unidades ya contadas en la seña)
+  // Top 5 Prendas Más Vendidas
   const topSellingProducts = useMemo(() => {
     const prodMap = new Map();
 
@@ -1575,7 +1579,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans select-none">
+    <div className="min-h-[100dvh] bg-slate-950 text-slate-100 flex flex-col font-sans select-none overflow-x-hidden">
       {/* BARRA SUPERIOR */}
       <header className="sticky top-0 z-30 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 px-4 py-3.5 flex items-center justify-between max-w-md mx-auto w-full">
         <div className="flex items-center gap-3">
@@ -1619,10 +1623,13 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* VISTA 1: VENDER (CON BLINDAJE DE STOCK EN CERO)           */}
+      {/* VISTA 1: VENDER (CON PADDING INFERIOR Y SAFE-AREA)        */}
       {/* ========================================================= */}
       {activeTab === 'vender' && (
-        <main className="p-4 flex-1 flex flex-col gap-4 max-w-md mx-auto w-full pb-40">
+        <main
+          className="p-4 flex-1 flex flex-col gap-4 max-w-md mx-auto w-full pb-36"
+          style={cart.length > 0 ? venderViewWithCartPaddingStyle : mainViewPaddingStyle}
+        >
           {/* BUSCADOR AMPLIO */}
           <div className="relative">
             <Search className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2" />
@@ -1766,9 +1773,12 @@ export default function App() {
         </main>
       )}
 
-      {/* BARRA FLOTANTE DEL CARRITO MULTI-PRODUCTO */}
-      {cart.length > 0 && (
-        <div className="fixed bottom-20 left-0 right-0 z-40 px-4 max-w-md mx-auto">
+      {/* BARRA FLOTANTE DEL CARRITO MULTI-PRODUCTO (Z-40) */}
+      {cart.length > 0 && !isCartOpen && (
+        <div
+          className="fixed left-0 right-0 z-40 px-4 max-w-md mx-auto"
+          style={{ bottom: 'calc(5rem + env(safe-area-inset-bottom, 0px))' }}
+        >
           <button
             type="button"
             onClick={() => setIsCartOpen(true)}
@@ -1800,10 +1810,13 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* VISTA 2: APARTADOS / RESERVAS (SEÑAS Y SALDOS PENDIENTES) */}
+      {/* VISTA 2: APARTADOS / RESERVAS (CON PADDING INFERIOR)      */}
       {/* ========================================================= */}
       {activeTab === 'apartados' && (
-        <main className="p-4 flex-1 flex flex-col gap-5 max-w-md mx-auto w-full pb-36">
+        <main
+          className="p-4 flex-1 flex flex-col gap-5 max-w-md mx-auto w-full pb-32"
+          style={mainViewPaddingStyle}
+        >
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-xl font-bold text-white">Apartados y Reservas</h2>
@@ -1857,7 +1870,6 @@ export default function App() {
                     key={ap.id}
                     className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col gap-4 shadow-md"
                   >
-                    {/* Encabezado: Clienta y Fecha */}
                     <div className="flex justify-between items-start gap-2 border-b border-slate-800 pb-3">
                       <div>
                         <span className="text-xs font-bold uppercase tracking-wider text-indigo-400 block">
@@ -1889,7 +1901,6 @@ export default function App() {
                       </span>
                     </div>
 
-                    {/* Prendas reservadas */}
                     <div className="flex flex-col gap-2">
                       <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
                         Prendas Reservadas ({ap?.cantidadTotal ?? listaPrendas.length} un.)
@@ -1929,7 +1940,6 @@ export default function App() {
                       ))}
                     </div>
 
-                    {/* Resumen Financiero: Total, Pagado y Pendiente */}
                     <div className="grid grid-cols-3 gap-2 bg-slate-950 border border-slate-800 rounded-xl p-3 text-center">
                       <div>
                         <span className="text-xs text-slate-400 block">Total</span>
@@ -1951,7 +1961,6 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Botones de Acción para Apartados Pendientes */}
                     {esPendiente && (
                       <div className="flex flex-col gap-2.5 pt-1">
                         <button
@@ -1988,10 +1997,13 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* VISTA 3: INVENTARIO (CON BADGE "AGOTADO" EN CERO)         */}
+      {/* VISTA 3: INVENTARIO (CON PADDING INFERIOR Y SAFE-AREA)    */}
       {/* ========================================================= */}
       {activeTab === 'inventario' && (
-        <main className="p-4 flex-1 flex flex-col gap-5 max-w-md mx-auto w-full pb-36">
+        <main
+          className="p-4 flex-1 flex flex-col gap-5 max-w-md mx-auto w-full pb-32"
+          style={mainViewPaddingStyle}
+        >
           {/* TARJETA KPI: TOTAL INVERTIDO */}
           <div className="bg-gradient-to-br from-indigo-950 via-slate-900 to-slate-900 border border-indigo-500/40 rounded-2xl p-5 shadow-xl">
             <div className="flex items-center justify-between mb-1">
@@ -2118,14 +2130,16 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* VISTA 4: MÉTRICAS, FILTRO DE FECHAS Y TOP 5 MÁS VENDIDAS  */}
+      {/* VISTA 4: MÉTRICAS (CON PADDING INFERIOR Y SAFE-AREA)      */}
       {/* ========================================================= */}
       {activeTab === 'metricas' && (
-        <main className="p-4 flex-1 flex flex-col gap-5 max-w-md mx-auto w-full pb-36">
+        <main
+          className="p-4 flex-1 flex flex-col gap-5 max-w-md mx-auto w-full pb-32"
+          style={mainViewPaddingStyle}
+        >
           <div className="flex flex-col gap-3">
             <h2 className="text-xl font-bold text-white">Métricas y Cierre de Caja</h2>
 
-            {/* BOTONES DE FILTRO POR RANGO DE FECHAS */}
             <div className="grid grid-cols-2 gap-2">
               {[
                 { id: 'hoy', label: 'Hoy' },
@@ -2309,7 +2323,7 @@ export default function App() {
             )}
           </div>
 
-          {/* HISTORIAL DE VENTAS FILTRADO CON DESGLOSE DE TICKET */}
+          {/* HISTORIAL DE VENTAS FILTRADO */}
           <div className="flex flex-col gap-3">
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-bold text-white">
@@ -2433,11 +2447,14 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* MODAL DEL CARRITO DE COMPRAS MULTI-PRODUCTO               */}
+      {/* MODAL DEL CARRITO DE COMPRAS (Z-50, MAX-H-88DVH, PB-32)   */}
       {/* ========================================================= */}
       {isCartOpen && cart.length > 0 && (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 overflow-y-auto">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-5 shadow-2xl flex flex-col gap-4 my-auto max-h-[92vh] overflow-y-auto">
+          <div
+            className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-5 pb-32 shadow-2xl flex flex-col gap-4 my-auto max-h-[88dvh] overflow-y-auto overscroll-contain"
+            style={modalSafeBottomStyle}
+          >
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center gap-2.5">
                 <ShoppingCart className="w-6 h-6 text-indigo-400" />
@@ -2464,8 +2481,8 @@ export default function App() {
               </button>
             </div>
 
-            {/* LISTA DE ARTÍCULOS EN EL CARRITO CON VALIDACIÓN DEL BOTÓN "+" */}
-            <div className="flex flex-col gap-3 max-h-60 overflow-y-auto pr-1">
+            {/* LISTA DE ARTÍCULOS EN EL CARRITO */}
+            <div className="flex flex-col gap-3">
               {cart.map((item) => {
                 const maxDisp = getLiveStock(item.productId, item.variantId, item.stockMax);
                 const alcanzoStockMaximo = item.cantidad >= maxDisp;
@@ -2514,7 +2531,6 @@ export default function App() {
                         </span>
                       </div>
 
-                      {/* Controles rápidos - / + con bloqueo en stock máximo */}
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
@@ -2539,11 +2555,6 @@ export default function App() {
                               ? 'bg-slate-800 text-slate-500 opacity-40 cursor-not-allowed border border-slate-700'
                               : 'bg-indigo-600 active:bg-indigo-500 text-white'
                           }`}
-                          title={
-                            alcanzoStockMaximo
-                              ? 'Alcanzaste el límite de stock disponible'
-                              : 'Sumar 1 unidad'
-                          }
                         >
                           +
                         </button>
@@ -2632,8 +2643,8 @@ export default function App() {
               </div>
             </div>
 
-            {/* BOTONES DE ACCIÓN: COBRAR TOTAL O APARTAR CON SEÑA */}
-            <div className="flex flex-col gap-2.5 pt-1">
+            {/* BOTONES DE ACCIÓN CON ESPACIADO INFERIOR HOLGADO */}
+            <div className="flex flex-col gap-3 pt-2">
               <button
                 type="button"
                 disabled={isProcessingSale ? true : !isCartTotalValid}
@@ -2653,7 +2664,7 @@ export default function App() {
                 type="button"
                 disabled={isProcessingSale ? true : !isCartTotalValid}
                 onClick={handleOpenLayawayModal}
-                className={`w-full h-13 py-3 rounded-xl text-base font-extrabold border transition-all flex items-center justify-center gap-2 ${
+                className={`w-full h-14 rounded-xl text-base font-extrabold border transition-all flex items-center justify-center gap-2 ${
                   isCartTotalValid && !isProcessingSale
                     ? 'bg-amber-500/15 hover:bg-amber-500/25 border-amber-500/40 text-amber-300 active:scale-[0.99]'
                     : 'bg-slate-800 text-slate-500 border-slate-700 cursor-not-allowed opacity-50'
@@ -2666,7 +2677,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setIsCartOpen(false)}
-                className="w-full h-11 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-sm font-semibold"
+                className="w-full h-12 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-base font-bold border border-slate-700"
               >
                 Seguir agregando prendas
               </button>
@@ -2676,11 +2687,14 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* MODAL DE NUEVO APARTADO CON SEÑA                          */}
+      {/* MODAL DE NUEVO APARTADO CON SEÑA (Z-50, MAX-H-88DVH)      */}
       {/* ========================================================= */}
       {isLayawayModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm flex items-center justify-center p-3 overflow-y-auto">
-          <div className="bg-slate-900 border border-amber-500/40 rounded-2xl w-full max-w-md p-5 shadow-2xl flex flex-col gap-4 my-auto max-h-[92vh] overflow-y-auto">
+          <div
+            className="bg-slate-900 border border-amber-500/40 rounded-2xl w-full max-w-md p-5 pb-32 shadow-2xl flex flex-col gap-4 my-auto max-h-[88dvh] overflow-y-auto overscroll-contain"
+            style={modalSafeBottomStyle}
+          >
             <div className="border-b border-slate-800 pb-3">
               <span className="text-xs font-extrabold uppercase tracking-wider text-amber-400">
                 Reserva de Mercadería
@@ -2720,7 +2734,6 @@ export default function App() {
                 />
               </div>
 
-              {/* Resumen del Pedido y Seña */}
               <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 flex flex-col gap-3 mt-1">
                 <div className="flex justify-between items-center">
                   <span className="text-sm text-slate-400 font-semibold">
@@ -2745,12 +2758,12 @@ export default function App() {
                     onChange={(e) => setLayawayDepositInput(e.target.value)}
                     className="w-full h-14 bg-slate-900 border border-amber-500/60 rounded-xl px-4 text-2xl font-extrabold text-emerald-400 text-center outline-none"
                   />
-                  {(!Number.isNaN(parsedLayawayDeposit) &&
-                    parsedLayawayDeposit >= layawayOrderTotal) && (
-                    <span className="text-xs text-rose-400 font-semibold block mt-1 text-center">
-                      La seña debe ser menor al total (si paga todo, usa "Cobrar Total").
-                    </span>
-                  )}
+                  {!Number.isNaN(parsedLayawayDeposit) &&
+                    parsedLayawayDeposit >= layawayOrderTotal && (
+                      <span className="text-xs text-rose-400 font-semibold block mt-1 text-center">
+                        La seña debe ser menor al total (si paga todo, usa "Cobrar Total").
+                      </span>
+                    )}
                 </div>
 
                 <div className="flex justify-between items-center pt-2 border-t border-slate-800">
@@ -2763,7 +2776,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Método de pago del anticipo */}
               <div>
                 <label className="text-sm font-semibold text-slate-300 block mb-2">
                   Método de Pago de la Seña
@@ -2787,7 +2799,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex flex-col gap-2.5 pt-2">
+            <div className="flex flex-col gap-3 pt-2">
               <button
                 type="button"
                 disabled={isProcessingApartado ? true : !isLayawayFormValid}
@@ -2806,7 +2818,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setIsLayawayModalOpen(false)}
-                className="w-full h-12 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-base font-semibold"
+                className="w-full h-12 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-base font-bold border border-slate-700"
               >
                 Volver al Carrito
               </button>
@@ -2816,11 +2828,14 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* MODAL PARA LIQUIDAR / COMPLETAR APARTADO                  */}
+      {/* MODAL PARA LIQUIDAR / COMPLETAR APARTADO (Z-50)           */}
       {/* ========================================================= */}
       {liquidatingApartado && (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-slate-900 border border-emerald-500/40 rounded-2xl w-full max-w-md p-5 shadow-2xl flex flex-col gap-4 my-auto">
+          <div
+            className="bg-slate-900 border border-emerald-500/40 rounded-2xl w-full max-w-md p-5 pb-32 shadow-2xl flex flex-col gap-4 my-auto max-h-[88dvh] overflow-y-auto overscroll-contain"
+            style={modalSafeBottomStyle}
+          >
             <div className="border-b border-slate-800 pb-3">
               <span className="text-xs font-extrabold uppercase tracking-wider text-emerald-400">
                 Liquidar Saldo Restante
@@ -2873,7 +2888,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex flex-col gap-2.5 pt-2">
+            <div className="flex flex-col gap-3 pt-2">
               <button
                 type="button"
                 disabled={isProcessingApartado}
@@ -2887,7 +2902,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setLiquidatingApartado(null)}
-                className="w-full h-12 bg-slate-800 text-slate-300 rounded-xl text-base font-semibold"
+                className="w-full h-12 bg-slate-800 text-slate-200 rounded-xl text-base font-bold border border-slate-700"
               >
                 Cancelar
               </button>
@@ -2897,11 +2912,14 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* MODAL DE EDICIÓN CONTROLADA DE PRENDA                     */}
+      {/* MODAL DE EDICIÓN CONTROLADA DE PRENDA (Z-50, PB-32)       */}
       {/* ========================================================= */}
       {editingProduct && (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 overflow-y-auto">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-5 shadow-2xl my-auto max-h-[92vh] overflow-y-auto flex flex-col gap-4">
+          <div
+            className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-5 pb-32 shadow-2xl my-auto max-h-[88dvh] overflow-y-auto overscroll-contain flex flex-col gap-4"
+            style={modalSafeBottomStyle}
+          >
             <div className="flex justify-between items-center border-b border-slate-800 pb-3">
               <h3 className="text-xl font-bold text-white">Editar Prenda</h3>
               <button
@@ -2960,7 +2978,7 @@ export default function App() {
               <div className="mt-2 border-t border-slate-800 pt-4 flex flex-col gap-3">
                 <span className="text-base font-bold text-white">Variantes, Colores y Stock</span>
 
-                <div className="flex flex-col gap-4 max-h-80 overflow-y-auto pr-1">
+                <div className="flex flex-col gap-4">
                   {editingProduct.variantes.map((v, idx) => (
                     <div
                       key={v.id}
@@ -3143,7 +3161,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex flex-col gap-2.5 mt-2 pt-3 border-t border-slate-800">
+            <div className="flex flex-col gap-3 mt-2 pt-3 border-t border-slate-800">
               <button
                 type="button"
                 disabled={isSavingEdit}
@@ -3155,7 +3173,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setEditingProduct(null)}
-                className="w-full h-12 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-base font-semibold"
+                className="w-full h-12 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-base font-bold border border-slate-700"
               >
                 Cancelar
               </button>
@@ -3165,11 +3183,14 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* MODAL DE NUEVA PRENDA                                     */}
+      {/* MODAL DE NUEVA PRENDA (Z-50, MAX-H-88DVH, PB-32)          */}
       {/* ========================================================= */}
       {showAddProductModal && (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 overflow-y-auto">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-5 shadow-2xl my-auto max-h-[92vh] overflow-y-auto flex flex-col gap-4">
+          <div
+            className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-5 pb-32 shadow-2xl my-auto max-h-[88dvh] overflow-y-auto overscroll-contain flex flex-col gap-4"
+            style={modalSafeBottomStyle}
+          >
             <h3 className="text-xl font-bold text-white border-b border-slate-800 pb-3">
               Agregar Nueva Prenda
             </h3>
@@ -3216,7 +3237,7 @@ export default function App() {
               <div className="mt-2 border-t border-slate-800 pt-3 flex flex-col gap-3">
                 <span className="text-base font-bold text-white">Colores, Tallas y Precios</span>
 
-                <div className="flex flex-col gap-4 max-h-72 overflow-y-auto pr-1">
+                <div className="flex flex-col gap-4">
                   {newVariants.map((v, idx) => (
                     <div
                       key={v.id}
@@ -3356,7 +3377,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex flex-col gap-2.5 mt-2 pt-3 border-t border-slate-800">
+            <div className="flex flex-col gap-3 mt-2 pt-3 border-t border-slate-800">
               <button
                 type="button"
                 onClick={handleSaveProduct}
@@ -3367,7 +3388,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setShowAddProductModal(false)}
-                className="w-full h-12 bg-slate-800 text-slate-300 rounded-xl text-base font-semibold"
+                className="w-full h-12 bg-slate-800 text-slate-200 rounded-xl text-base font-bold border border-slate-700"
               >
                 Cancelar
               </button>
@@ -3377,9 +3398,12 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* BARRA DE NAVEGACIÓN INFERIOR (4 PESTAÑAS INCL. APARTADOS) */}
+      {/* BARRA DE NAVEGACIÓN INFERIOR (Z-40 Y SAFE-AREA)           */}
       {/* ========================================================= */}
-      <nav className="fixed bottom-0 left-0 right-0 z-30 bg-slate-900/95 backdrop-blur-md border-t border-slate-800">
+      <nav
+        className="fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur-md border-t border-slate-800"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+      >
         <div className="max-w-md mx-auto grid grid-cols-4 gap-1 p-2">
           <button
             type="button"
