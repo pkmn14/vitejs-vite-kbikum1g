@@ -283,7 +283,7 @@ export default function App() {
   const [isLayawayModalOpen, setIsLayawayModalOpen] = useState(false);
   const [layawayClientName, setLayawayClientName] = useState('');
   const [layawayClientPhone, setLayawayClientPhone] = useState('');
-  const [layawayDepositInput, setLayawayDepositInput] = useState('');
+  const [layawayDepositInput, setLayawayDepositInput] = useState('0');
   const [layawayPaymentMethod, setLayawayPaymentMethod] = useState('Efectivo');
   const [apartadosFilter, setApartadosFilter] = useState('pendiente');
   const [liquidatingApartado, setLiquidatingApartado] = useState(null);
@@ -530,11 +530,14 @@ export default function App() {
     return cart.length > 0 && !Number.isNaN(finalTotalToCharge) && finalTotalToCharge > 0;
   }, [cart.length, finalTotalToCharge]);
 
-  // Cálculos para el Modal de Apartado con Seña
+  // =========================================================
+  // CÁLCULOS DE APARTADO / RESERVA (ACEPTA SEÑA DE $0.00)
+  // =========================================================
   const parsedLayawayDeposit = useMemo(() => {
     const texto = String(layawayDepositInput ?? '').trim();
-    if (!texto) return NaN;
-    return parseFloat(texto);
+    if (!texto) return 0; // Si se deja vacío, asume $0.00 por defecto
+    const num = parseFloat(texto);
+    return Number.isNaN(num) ? NaN : num;
   }, [layawayDepositInput]);
 
   const layawayOrderTotal = useMemo(() => {
@@ -542,7 +545,9 @@ export default function App() {
   }, [finalTotalToCharge, cartSubtotal]);
 
   const layawayPendingBalance = useMemo(() => {
-    if (Number.isNaN(parsedLayawayDeposit)) return layawayOrderTotal;
+    if (Number.isNaN(parsedLayawayDeposit) || parsedLayawayDeposit < 0) {
+      return layawayOrderTotal;
+    }
     return Math.max(0, Number((layawayOrderTotal - parsedLayawayDeposit).toFixed(2)));
   }, [layawayOrderTotal, parsedLayawayDeposit]);
 
@@ -550,7 +555,7 @@ export default function App() {
     const tieneNombre = Boolean(layawayClientName.trim());
     const senaValida =
       !Number.isNaN(parsedLayawayDeposit) &&
-      parsedLayawayDeposit > 0 &&
+      parsedLayawayDeposit >= 0 &&
       parsedLayawayDeposit < layawayOrderTotal;
     return cart.length > 0 && tieneNombre && senaValida;
   }, [cart.length, layawayClientName, parsedLayawayDeposit, layawayOrderTotal]);
@@ -806,17 +811,16 @@ export default function App() {
   };
 
   // =========================================================
-  // 2. CREAR APARTADO CON SEÑA
+  // 2. CREAR APARTADO CON O SIN SEÑA ($0.00 PERMITIDO)
   // =========================================================
   const handleOpenLayawayModal = () => {
     if (!isCartTotalValid) {
       alert('Verifica que el total del pedido sea válido antes de apartar.');
       return;
     }
-    const sugerenciaMitad = (layawayOrderTotal * 0.5).toFixed(2);
     setLayawayClientName('');
     setLayawayClientPhone('');
-    setLayawayDepositInput(sugerenciaMitad);
+    setLayawayDepositInput('0');
     setLayawayPaymentMethod(paymentMethod);
     setIsLayawayModalOpen(true);
   };
@@ -827,7 +831,8 @@ export default function App() {
     const cliente = layawayClientName.trim();
     const telefono = layawayClientPhone.trim();
     const totalPedido = Number(layawayOrderTotal.toFixed(2));
-    const montoSena = Number(parsedLayawayDeposit.toFixed(2));
+    const montoSena = Math.max(0, Number((Number.isNaN(parsedLayawayDeposit) ? 0 : parsedLayawayDeposit).toFixed(2)));
+    const tieneSenaInicial = montoSena > 0;
     const saldoPendiente = Number((totalPedido - montoSena).toFixed(2));
 
     const costoTotalPedido = Number(
@@ -916,12 +921,14 @@ export default function App() {
             actualizacionesPendientes.push({ prodRef, listaVariantes });
           }
 
+          // 1. Descontar las prendas del stock en Firestore siempre (con o sin seña)
           for (const act of actualizacionesPendientes) {
             transaction.update(act.prodRef, { variantes: act.listaVariantes });
           }
 
+          // 2. Guardar documento del apartado
           const nuevoApartadoRef = doc(collection(db, 'apartados'));
-          const nuevaVentaSenaRef = doc(collection(db, 'sales'));
+          const nuevaVentaSenaRef = tieneSenaInicial ? doc(collection(db, 'sales')) : null;
 
           transaction.set(nuevoApartadoRef, {
             clienteNombre: cliente,
@@ -932,42 +939,52 @@ export default function App() {
             montoPagado: montoSena,
             saldoPendiente: saldoPendiente,
             costoTotalPedido: costoTotalPedido,
-            metodoPagoSena: layawayPaymentMethod,
-            saleSenaId: nuevaVentaSenaRef.id,
+            metodoPagoSena: tieneSenaInicial ? layawayPaymentMethod : 'Sin pago inicial ($0.00)',
+            saleSenaId: nuevaVentaSenaRef ? nuevaVentaSenaRef.id : '',
+            esReservaSinSena: !tieneSenaInicial,
             estado: 'pendiente',
             timestamp: serverTimestamp(),
             fechaIso: ahora.toISOString(),
             fechaLocal: fechaFormateada,
           });
 
-          transaction.set(nuevaVentaSenaRef, {
-            tipoMovimiento: 'sena_apartado',
-            apartadoId: nuevoApartadoRef.id,
-            clienteNombre: cliente,
-            esVentaAgrupada: true,
-            items: itemsReservados,
-            productId: itemsReservados[0]?.productId ?? '',
-            variantId: itemsReservados[0]?.variantId ?? '',
-            productoNombre: `Seña Apartado - ${cliente}`,
-            color: itemsReservados.length === 1 ? itemsReservados[0].color : 'Varios',
-            talla: itemsReservados.length === 1 ? itemsReservados[0].talla : 'Varias',
-            cantidad: cartTotalItems,
-            subtotal: totalPedido,
-            descuento: 0,
-            total: montoSena,
-            costoTotal: costoProporcionalSena,
-            gananciaNeta: gananciaSenaHoy,
-            metodoPago: layawayPaymentMethod,
-            timestamp: serverTimestamp(),
-            fechaIso: ahora.toISOString(),
-            fechaLocal: fechaFormateada,
-          });
+          // 3. SOLO registrar ingreso en la caja del día si montoSena > 0
+          if (tieneSenaInicial && nuevaVentaSenaRef) {
+            transaction.set(nuevaVentaSenaRef, {
+              tipoMovimiento: 'sena_apartado',
+              apartadoId: nuevoApartadoRef.id,
+              clienteNombre: cliente,
+              esVentaAgrupada: true,
+              items: itemsReservados,
+              productId: itemsReservados[0]?.productId ?? '',
+              variantId: itemsReservados[0]?.variantId ?? '',
+              productoNombre: `Seña Apartado - ${cliente}`,
+              color: itemsReservados.length === 1 ? itemsReservados[0].color : 'Varios',
+              talla: itemsReservados.length === 1 ? itemsReservados[0].talla : 'Varias',
+              cantidad: cartTotalItems,
+              subtotal: totalPedido,
+              descuento: 0,
+              total: montoSena,
+              costoTotal: costoProporcionalSena,
+              gananciaNeta: gananciaSenaHoy,
+              metodoPago: layawayPaymentMethod,
+              timestamp: serverTimestamp(),
+              fechaIso: ahora.toISOString(),
+              fechaLocal: fechaFormateada,
+            });
+          }
         });
       }
 
-      setSaleSuccessMessage(
-        `Apartado creado para ${cliente}. Seña en caja: $${montoSena.toFixed(2)} (Pendiente: $${saldoPendiente.toFixed(2)})`
-      );
+      if (tieneSenaInicial) {
+        setSaleSuccessMessage(
+          `Apartado creado para ${cliente}. Seña en caja: $${montoSena.toFixed(2)} (Pendiente: $${saldoPendiente.toFixed(2)})`
+        );
+      } else {
+        setSaleSuccessMessage(
+          `Reserva sin seña registrada para ${cliente}. Stock separado (Pendiente: $${saldoPendiente.toFixed(2)})`
+        );
+      }
       setTimeout(() => setSaleSuccessMessage(null), 5000);
 
       setCart([]);
@@ -994,6 +1011,7 @@ export default function App() {
     const saldoRestante = Math.max(0, Number(ap?.saldoPendiente ?? 0));
     const totalPedido = Math.max(0, Number(ap?.totalPedido ?? 0));
     const costoTotalPedido = Math.max(0, Number(ap?.costoTotalPedido ?? 0));
+    const eraSinSena = Number(ap?.montoPagado ?? 0) <= 0;
 
     const proporcionSaldo = totalPedido > 0 ? saldoRestante / totalPedido : 0;
     const costoProporcionalSaldo = Number((costoTotalPedido * proporcionSaldo).toFixed(2));
@@ -1021,8 +1039,10 @@ export default function App() {
             fechaLiquidacionLocal: fechaFormateada,
           });
 
+          // Si el apartado se creó con $0.00 de seña, al liquidarlo cuenta también para el ranking de prendas vendidas
           transaction.set(nuevaVentaLiqRef, {
             tipoMovimiento: 'liquidacion_apartado',
+            eraReservaSinSena: eraSinSena,
             apartadoId: String(ap.id),
             clienteNombre: ap?.clienteNombre ?? 'Clienta',
             esVentaAgrupada: true,
@@ -1062,8 +1082,11 @@ export default function App() {
   const handleCancelApartado = async (ap) => {
     if (!ap ? true : isProcessingApartado) return;
 
+    const tieneSenaPagada = Number(ap?.montoPagado ?? 0) > 0;
     const confirmar = window.confirm(
-      `¿Cancelar el apartado de "${ap?.clienteNombre ?? 'Clienta'}"? Las prendas se devolverán automáticamente al inventario (+stock) y se anulará el anticipo de la caja.`
+      tieneSenaPagada
+        ? `¿Cancelar el apartado de "${ap?.clienteNombre ?? 'Clienta'}"? Las prendas se devolverán al inventario (+stock) y se descontará la seña de la caja.`
+        : `¿Cancelar la reserva sin seña de "${ap?.clienteNombre ?? 'Clienta'}" y devolver las prendas al inventario (+stock)?`
     );
     if (!confirmar) return;
 
@@ -1175,6 +1198,7 @@ export default function App() {
             await updateDoc(doc(db, 'apartados', String(sale.apartadoId)), {
               estado: 'pendiente',
               saldoPendiente: Number(sale?.total ?? 0),
+              montoPagado: sale?.eraReservaSinSena ? 0 : undefined,
             });
           }
         }
@@ -1422,12 +1446,12 @@ export default function App() {
     return { totalIngresos, gananciaNeta, porEfectivo, porQR };
   }, [filteredSales]);
 
-  // Top 5 Prendas Más Vendidas
+  // Top 5 Prendas Más Vendidas (ignora liquidaciones si ya tuvieron seña, pero incluye liquidaciones de reservas que iniciaron en $0.00)
   const topSellingProducts = useMemo(() => {
     const prodMap = new Map();
 
     filteredSales.forEach((s) => {
-      if (s?.tipoMovimiento === 'liquidacion_apartado') return;
+      if (s?.tipoMovimiento === 'liquidacion_apartado' && !s?.eraReservaSinSena) return;
 
       const itemsList =
         Array.isArray(s?.items) && s.items.length > 0
@@ -1917,7 +1941,7 @@ export default function App() {
                   {(Number.isNaN(finalTotalToCharge) ? cartSubtotal : finalTotalToCharge).toFixed(2)}
                 </span>
                 <span className="text-xs text-indigo-200 font-medium block">
-                  Toca para cobrar o apartar con seña
+                  Toca para cobrar o apartar
                 </span>
               </div>
             </div>
@@ -1930,7 +1954,7 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* VISTA 2: APARTADOS / RESERVAS                             */}
+      {/* VISTA 2: APARTADOS / RESERVAS (MUESTRA BADGE SIN SEÑA)    */}
       {/* ========================================================= */}
       {activeTab === 'apartados' && (
         <main
@@ -1941,7 +1965,7 @@ export default function App() {
             <div>
               <h2 className="text-xl font-bold text-white">Apartados y Reservas</h2>
               <p className="text-sm text-slate-400">
-                Control de señas, prendas separadas y saldos por cobrar.
+                Control de reservas, señas y saldos pendientes por cobrar.
               </p>
             </div>
             <span className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 font-extrabold text-sm">
@@ -1974,13 +1998,15 @@ export default function App() {
             {filteredApartados.length === 0 ? (
               <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-8 text-center text-slate-400 text-base">
                 {apartadosFilter === 'pendiente'
-                  ? 'No hay apartados pendientes por cobrar. Para crear uno, agrega prendas al carrito en "Vender" y elige "Apartar con Seña".'
+                  ? 'No hay apartados pendientes por cobrar. Para crear uno, agrega prendas al carrito en "Vender" y elige "Apartar / Reservar".'
                   : `No hay apartados en estado "${apartadosFilter}".`}
               </div>
             ) : (
               filteredApartados.map((ap) => {
                 const esPendiente = (ap?.estado ?? 'pendiente') === 'pendiente';
                 const esCompletado = ap?.estado === 'completado';
+                const montoPagado = Number(ap?.montoPagado ?? 0);
+                const sinSenaInicial = esPendiente && montoPagado <= 0;
                 const listaPrendas = Array.isArray(ap?.items) ? ap.items : [];
 
                 return (
@@ -2006,17 +2032,25 @@ export default function App() {
                         </span>
                       </div>
 
-                      <span
-                        className={`px-3 py-1 rounded-xl text-xs font-extrabold uppercase tracking-wider border ${
-                          esPendiente
-                            ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
-                            : esCompletado
-                            ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
-                            : 'bg-rose-500/15 text-rose-300 border-rose-500/40'
-                        }`}
-                      >
-                        {esPendiente ? 'Pendiente' : esCompletado ? 'Liquidado' : 'Cancelado'}
-                      </span>
+                      <div className="flex flex-col items-end gap-1.5 shrink-0">
+                        <span
+                          className={`px-3 py-1 rounded-xl text-xs font-extrabold uppercase tracking-wider border ${
+                            esPendiente
+                              ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+                              : esCompletado
+                              ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+                              : 'bg-rose-500/15 text-rose-300 border-rose-500/40'
+                          }`}
+                        >
+                          {esPendiente ? 'Pendiente' : esCompletado ? 'Liquidado' : 'Cancelado'}
+                        </span>
+
+                        {sinSenaInicial && (
+                          <span className="px-2.5 py-1 rounded-lg bg-indigo-500/15 border border-indigo-500/40 text-indigo-300 text-[11px] font-extrabold">
+                            Reserva sin seña ($0.00 pagado)
+                          </span>
+                        )}
+                      </div>
                     </div>
 
                     <div className="flex flex-col gap-2">
@@ -2067,8 +2101,12 @@ export default function App() {
                       </div>
                       <div className="border-x border-slate-800 px-1">
                         <span className="text-xs text-slate-400 block">Pagado</span>
-                        <span className="text-base font-extrabold text-emerald-400 mt-0.5 block">
-                          ${Number(ap?.montoPagado ?? 0).toFixed(2)}
+                        <span
+                          className={`text-base font-extrabold mt-0.5 block ${
+                            montoPagado > 0 ? 'text-emerald-400' : 'text-slate-400'
+                          }`}
+                        >
+                          ${montoPagado.toFixed(2)}
                         </span>
                       </div>
                       <div>
@@ -2875,7 +2913,7 @@ export default function App() {
                 }`}
               >
                 <Tag className="w-5 h-5" />
-                Apartar con Seña (Reserva)
+                Apartar / Reservar (Con o sin seña)
               </button>
 
               <button
@@ -2891,7 +2929,7 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* MODAL DE NUEVO APARTADO CON SEÑA (Z-50, MAX-H-88DVH)      */}
+      {/* MODAL DE APARTADO / RESERVA (ACEPTA $0.00 SIN SEÑA)       */}
       {/* ========================================================= */}
       {isLayawayModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm flex items-center justify-center p-3 overflow-y-auto">
@@ -2904,10 +2942,10 @@ export default function App() {
                 Reserva de Mercadería
               </span>
               <h3 className="text-xl font-bold text-white mt-0.5">
-                Apartar con Seña
+                Apartar con o sin Seña
               </h3>
               <p className="text-xs text-slate-400 mt-1">
-                Las prendas se descontarán del inventario inmediatamente y la seña sumará a la caja de hoy.
+                Las prendas se descuentan del stock de inmediato. Si la seña es $0.00, no suma dinero a la caja de hoy.
               </p>
             </div>
 
@@ -2949,23 +2987,43 @@ export default function App() {
                 </div>
 
                 <div>
-                  <label className="text-xs font-bold uppercase tracking-wider text-amber-300 block mb-1.5">
-                    Monto de la Seña / Anticipo Pagado Hoy ($) *
-                  </label>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-bold uppercase tracking-wider text-amber-300">
+                      Seña / Anticipo Hoy ($)
+                    </label>
+                    <div className="flex gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setLayawayDepositInput('0')}
+                        className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 border border-slate-700"
+                      >
+                        Sin seña ($0)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setLayawayDepositInput((layawayOrderTotal * 0.5).toFixed(2))}
+                        className="px-2.5 py-1 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 text-xs font-bold text-indigo-300 border border-indigo-500/30"
+                      >
+                        50% (${(layawayOrderTotal * 0.5).toFixed(0)})
+                      </button>
+                    </div>
+                  </div>
+
                   <input
                     type="number"
                     step="0.01"
-                    min="0.01"
+                    min="0"
                     max={layawayOrderTotal}
-                    placeholder="0.00"
+                    placeholder="0.00 (Sin seña)"
                     value={layawayDepositInput}
                     onChange={(e) => setLayawayDepositInput(e.target.value)}
                     className="w-full h-14 bg-slate-900 border border-amber-500/60 rounded-xl px-4 text-2xl font-extrabold text-emerald-400 text-center outline-none"
                   />
+
                   {!Number.isNaN(parsedLayawayDeposit) &&
                     parsedLayawayDeposit >= layawayOrderTotal && (
                       <span className="text-xs text-rose-400 font-semibold block mt-1 text-center">
-                        La seña debe ser menor al total (si paga todo, usa "Cobrar Total").
+                        La seña debe ser menor al total (si paga todo hoy, usa "Cobrar Total").
                       </span>
                     )}
                 </div>
@@ -2980,27 +3038,39 @@ export default function App() {
                 </div>
               </div>
 
-              <div>
-                <label className="text-sm font-semibold text-slate-300 block mb-2">
-                  Método de Pago de la Seña
-                </label>
-                <div className="grid grid-cols-2 gap-3">
-                  {['Efectivo', 'QR / Transf.'].map((metodo) => (
-                    <button
-                      key={metodo}
-                      type="button"
-                      onClick={() => setLayawayPaymentMethod(metodo)}
-                      className={`h-12 rounded-xl font-extrabold text-base border transition-all ${
-                        layawayPaymentMethod === metodo
-                          ? 'bg-indigo-600 text-white border-indigo-400 shadow-lg shadow-indigo-600/30'
-                          : 'bg-slate-950 text-slate-300 border-slate-800'
-                      }`}
-                    >
-                      {metodo}
-                    </button>
-                  ))}
+              {/* Si el anticipo es > 0 muestra selector de pago; si es $0.00 muestra aviso neutro */}
+              {!Number.isNaN(parsedLayawayDeposit) && parsedLayawayDeposit > 0 ? (
+                <div>
+                  <label className="text-sm font-semibold text-slate-300 block mb-2">
+                    Método de Pago de la Seña
+                  </label>
+                  <div className="grid grid-cols-2 gap-3">
+                    {['Efectivo', 'QR / Transf.'].map((metodo) => (
+                      <button
+                        key={metodo}
+                        type="button"
+                        onClick={() => setLayawayPaymentMethod(metodo)}
+                        className={`h-12 rounded-xl font-extrabold text-base border transition-all ${
+                          layawayPaymentMethod === metodo
+                            ? 'bg-indigo-600 text-white border-indigo-400 shadow-lg shadow-indigo-600/30'
+                            : 'bg-slate-950 text-slate-300 border-slate-800'
+                        }`}
+                      >
+                        {metodo}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="bg-indigo-950/30 border border-indigo-500/30 rounded-xl p-3 text-center">
+                  <span className="text-xs font-bold text-indigo-300 block">
+                    Estado: Sin pago inicial ($0.00)
+                  </span>
+                  <span className="text-xs text-slate-400 block mt-0.5">
+                    No se sumará dinero a la caja de hoy hasta que se liquide el apartado.
+                  </span>
+                </div>
+              )}
             </div>
 
             <div className="flex flex-col gap-3 pt-2">
@@ -3015,8 +3085,10 @@ export default function App() {
                 }`}
               >
                 {isProcessingApartado
-                  ? 'Guardando Apartado...'
-                  : `Confirmar Apartado (Cobrar Seña $${(Number.isNaN(parsedLayawayDeposit) ? 0 : parsedLayawayDeposit).toFixed(2)})`}
+                  ? 'Guardando Reserva...'
+                  : !Number.isNaN(parsedLayawayDeposit) && parsedLayawayDeposit > 0
+                  ? `Confirmar Apartado (Seña $${parsedLayawayDeposit.toFixed(2)})`
+                  : 'Confirmar Reserva sin Seña ($0.00)'}
               </button>
 
               <button
