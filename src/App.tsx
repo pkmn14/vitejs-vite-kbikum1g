@@ -535,7 +535,7 @@ export default function App() {
   // =========================================================
   const parsedLayawayDeposit = useMemo(() => {
     const texto = String(layawayDepositInput ?? '').trim();
-    if (!texto) return 0; // Si se deja vacío, asume $0.00 por defecto
+    if (!texto) return 0;
     const num = parseFloat(texto);
     return Number.isNaN(num) ? NaN : num;
   }, [layawayDepositInput]);
@@ -545,7 +545,7 @@ export default function App() {
   }, [finalTotalToCharge, cartSubtotal]);
 
   const layawayPendingBalance = useMemo(() => {
-    if (Number.isNaN(parsedLayawayDeposit) || parsedLayawayDeposit < 0) {
+    if (Number.isNaN(parsedLayawayDeposit) ? true : parsedLayawayDeposit < 0) {
       return layawayOrderTotal;
     }
     return Math.max(0, Number((layawayOrderTotal - parsedLayawayDeposit).toFixed(2)));
@@ -831,7 +831,10 @@ export default function App() {
     const cliente = layawayClientName.trim();
     const telefono = layawayClientPhone.trim();
     const totalPedido = Number(layawayOrderTotal.toFixed(2));
-    const montoSena = Math.max(0, Number((Number.isNaN(parsedLayawayDeposit) ? 0 : parsedLayawayDeposit).toFixed(2)));
+    const montoSena = Math.max(
+      0,
+      Number((Number.isNaN(parsedLayawayDeposit) ? 0 : parsedLayawayDeposit).toFixed(2))
+    );
     const tieneSenaInicial = montoSena > 0;
     const saldoPendiente = Number((totalPedido - montoSena).toFixed(2));
 
@@ -921,12 +924,10 @@ export default function App() {
             actualizacionesPendientes.push({ prodRef, listaVariantes });
           }
 
-          // 1. Descontar las prendas del stock en Firestore siempre (con o sin seña)
           for (const act of actualizacionesPendientes) {
             transaction.update(act.prodRef, { variantes: act.listaVariantes });
           }
 
-          // 2. Guardar documento del apartado
           const nuevoApartadoRef = doc(collection(db, 'apartados'));
           const nuevaVentaSenaRef = tieneSenaInicial ? doc(collection(db, 'sales')) : null;
 
@@ -948,7 +949,6 @@ export default function App() {
             fechaLocal: fechaFormateada,
           });
 
-          // 3. SOLO registrar ingreso en la caja del día si montoSena > 0
           if (tieneSenaInicial && nuevaVentaSenaRef) {
             transaction.set(nuevaVentaSenaRef, {
               tipoMovimiento: 'sena_apartado',
@@ -1039,7 +1039,6 @@ export default function App() {
             fechaLiquidacionLocal: fechaFormateada,
           });
 
-          // Si el apartado se creó con $0.00 de seña, al liquidarlo cuenta también para el ranking de prendas vendidas
           transaction.set(nuevaVentaLiqRef, {
             tipoMovimiento: 'liquidacion_apartado',
             eraReservaSinSena: eraSinSena,
@@ -1446,7 +1445,7 @@ export default function App() {
     return { totalIngresos, gananciaNeta, porEfectivo, porQR };
   }, [filteredSales]);
 
-  // Top 5 Prendas Más Vendidas (ignora liquidaciones si ya tuvieron seña, pero incluye liquidaciones de reservas que iniciaron en $0.00)
+  // Top 5 Prendas Más Vendidas
   const topSellingProducts = useMemo(() => {
     const prodMap = new Map();
 
@@ -1954,7 +1953,7 @@ export default function App() {
       )}
 
       {/* ========================================================= */}
-      {/* VISTA 2: APARTADOS / RESERVAS (MUESTRA BADGE SIN SEÑA)    */}
+      {/* VISTA 2: APARTADOS / RESERVAS (CON BOTÓN WHATSAPP +591)   */}
       {/* ========================================================= */}
       {activeTab === 'apartados' && (
         <main
@@ -2009,27 +2008,46 @@ export default function App() {
                 const sinSenaInicial = esPendiente && montoPagado <= 0;
                 const listaPrendas = Array.isArray(ap?.items) ? ap.items : [];
 
+                // Extracción y validación estricta de los últimos 8 dígitos (Bolivia +591)
+                const telefonoRaw = String(ap?.clienteTelefono ?? '');
+                const soloNumeros = telefonoRaw.replace(/\D/g, '');
+                const ultimos8 = soloNumeros.slice(-8);
+                const tieneWhatsappValido = ultimos8.length === 8;
+                const urlWhatsapp = tieneWhatsappValido ? `https://wa.me/591${ultimos8}` : '';
+
                 return (
                   <div
                     key={ap.id}
                     className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col gap-4 shadow-md"
                   >
                     <div className="flex justify-between items-start gap-2 border-b border-slate-800 pb-3">
-                      <div>
+                      <div className="flex flex-col items-start">
                         <span className="text-xs font-bold uppercase tracking-wider text-indigo-400 block">
                           Clienta
                         </span>
                         <h3 className="text-xl font-bold text-white leading-snug">
                           {ap?.clienteNombre ?? 'Clienta'}
                         </h3>
-                        {ap?.clienteTelefono && (
-                          <span className="text-sm text-emerald-400 font-semibold block mt-0.5">
-                            Tel / WhatsApp: {ap.clienteTelefono}
-                          </span>
-                        )}
                         <span className="text-xs text-slate-400 block mt-1">
                           Fecha apartado: {ap?.fechaLocal ?? ''}
                         </span>
+
+                        {/* Botón de WhatsApp (Solo se muestra si hay 8 dígitos válidos) */}
+                        {tieneWhatsappValido && (
+                          <button
+                            type="button"
+                            onClick={() => window.open(urlWhatsapp, '_blank')}
+                            className="mt-2.5 h-11 px-4 bg-emerald-600/20 hover:bg-emerald-600/30 active:scale-95 border border-emerald-500/40 text-emerald-300 rounded-xl font-extrabold text-sm inline-flex items-center gap-2 transition-all shadow-sm"
+                          >
+                            <svg
+                              className="w-4 h-4 fill-current shrink-0"
+                              viewBox="0 0 24 24"
+                            >
+                              <path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.019 3.287l-.582 2.128 2.182-.573c.978.58 1.911.928 3.145.929 3.178 0 5.767-2.587 5.768-5.766.001-3.187-2.575-5.77-5.764-5.771zm3.392 8.244c-.144.405-.837.774-1.17.824-.299.045-.677.063-1.092-.069-.252-.08-.575-.187-.988-.365-1.739-.751-2.874-2.502-2.961-2.617-.087-.116-.708-.94-.708-1.793s.448-1.273.607-1.446c.159-.173.346-.217.462-.217l.332.006c.106.005.249-.04.39.298.144.347.491 1.2.534 1.287.043.087.072.188.014.304-.058.116-.087.188-.173.289l-.26.304c-.087.086-.177.18-.076.354.101.174.449.741.964 1.201.662.591 1.221.774 1.394.86s.274.072.376-.043c.101-.116.433-.506.549-.68.116-.173.231-.145.39-.087s1.011.477 1.184.564.289.13.332.202c.045.072.045.419-.1.824z" />
+                            </svg>
+                            <span>WhatsApp (+591 {ultimos8})</span>
+                          </button>
+                        )}
                       </div>
 
                       <div className="flex flex-col items-end gap-1.5 shrink-0">
@@ -2965,7 +2983,7 @@ export default function App() {
 
               <div>
                 <label className="text-sm font-semibold text-slate-300 block mb-1">
-                  Teléfono / WhatsApp (Opcional)
+                  Teléfono / WhatsApp (Bolivia - 8 dígitos)
                 </label>
                 <input
                   type="tel"
@@ -3038,7 +3056,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Si el anticipo es > 0 muestra selector de pago; si es $0.00 muestra aviso neutro */}
               {!Number.isNaN(parsedLayawayDeposit) && parsedLayawayDeposit > 0 ? (
                 <div>
                   <label className="text-sm font-semibold text-slate-300 block mb-2">
